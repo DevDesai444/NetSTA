@@ -1,0 +1,38 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Synthetic datasets — regenerated automatically when the schema_version bumps
+data/
+data_analog/
+data_mixed/
+
+# Trained model artifacts — retrain from source. To share a checkpoint,
+# explicitly `git add -f checkpoints/<name>.pt`.
+checkpoints/
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Streamlit
+.streamlit/
+
+# Local benchmark logs
+results/master_run.log
+
+# Persistent vector stores (RAG knowledge / circuit-embedding index)
+netsta_vectordb/
+circuit_embeddb/
+
+# pytest / coverage artifacts
+.coverage
+coverage.xml
+.pytest_cache/
+
+# Source archives — extract into the repo, don't commit them
+*.zip

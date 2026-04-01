@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netsta"
+version = "0.1.0"
+description = "Multi-task Graph Neural Network for VLSI circuit analysis: timing, congestion, DRC, analog performance, with LLM-assisted spec parsing and RAG-powered design advisory."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Dev Desai" }]
+keywords = [
+  "vlsi", "eda", "gnn", "graph-neural-network", "static-timing-analysis",
+  "routability", "drc", "analog-circuit", "rag", "llm",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+
+# Core dependencies (model + training + inference).
+dependencies = [
+  "torch>=2.0.0",
+  "torch-geometric>=2.5.0",
+  "numpy>=1.24.0",
+  "matplotlib>=3.7.0",
+]
+
+[project.optional-dependencies]
+# RAG / vector-DB / LLM functionality.
+rag = [
+  "chromadb>=1.0",
+  "sentence-transformers>=2.2",
+  "openai>=1.0",
+  "anthropic>=0.30",
+  "pydantic>=2.0",
+  "ollama>=0.1",
+  "umap-learn>=0.5",
+]
+# Interactive demo + benchmarking visualisation.
+demo = [
+  "streamlit>=1.30",
+  "plotly>=5.18",
+  "networkx>=3.0",
+]
+# Optional sklearn for baselines and t-SNE fallback.
+ml-extras = ["scikit-learn>=1.0"]
+# Dev + CI tooling.
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
+
+[project.scripts]
+# Console entry points: `pip install -e .` then run `netsta-parse "..."` etc.
+netsta-parse  = "netsta.parse:main"
+netsta-search = "netsta.search:main"
+
+[project.urls]
+Homepage   = "https://github.com/DevDesai444/NetSTA"
+Repository = "https://github.com/DevDesai444/NetSTA"
+Issues     = "https://github.com/DevDesai444/NetSTA/issues"
+
+[tool.setuptools.packages.find]
+include = ["netsta*", "timingnet*"]
+exclude = ["tests*", "scripts*"]
+
+[tool.setuptools.package-data]
+"timingnet.rag" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+  # ChromaDB on pydantic 2 emits a couple of harmless field-attribute warnings.
+  "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+  "ignore::UserWarning",
+]
