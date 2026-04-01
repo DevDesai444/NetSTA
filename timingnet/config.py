@@ -1,0 +1,73 @@
+"""
+Configuration objects for the NetSTA model.
+
+A single dataclass collects every knob the backbone, task heads, and
+optimizer need so callers can change behaviour without editing model code.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, Tuple
+
+
+# Defaults below match the original TimingNet setup so the existing
+# training pipeline reproduces prior results when no overrides are passed.
+DEFAULT_TASK_WEIGHTS: Dict[str, float] = {
+    "slack": 0.5,
+    "critical_path": 0.5,
+}
+
+DEFAULT_ACTIVE_TASKS: Tuple[str, ...] = ("slack", "critical_path")
+
+
+@dataclass
+class NetSTAConfig:
+    """Hyperparameters for the NetSTA backbone, heads, and optimizer."""
+
+    # Feature dimensions -- node_feature_dim is data-dependent and must be
+    # set by the caller before model construction.
+    node_feature_dim: int = 0
+    # Default reflects the current graph_builder output:
+    # [wire_delay, manhattan_distance, net_fanout] = 3 dims.
+    edge_feature_dim: int = 3
+
+    # Backbone
+    hidden_dim: int = 64
+    num_layers: int = 4
+    num_heads: int = 4
+    dropout: float = 0.1
+
+    # Optimizer
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    # Multiplier applied per-layer from the head backwards: param_lr =
+    # base_lr * (layer_decay ** (num_layers - layer_idx - 1)). 1.0 disables.
+    layer_decay: float = 1.0
+
+    # Task selection. Only tasks listed in `active_tasks` are constructed;
+    # `task_weights` must contain a weight for every active task.
+    active_tasks: Tuple[str, ...] = DEFAULT_ACTIVE_TASKS
+    task_weights: Dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_TASK_WEIGHTS)
+    )
+
+    # Class-imbalance cap for the critical-path BCE pos_weight.
+    critical_pos_weight_cap: float = 10.0
+
+    # Ablation flags. Defaults reproduce the original architecture.
+    use_residual: bool = True
+    use_attention: bool = True  # False -> GCNConv (uniform message passing)
+    # When True, the backbone uses SymmetryAwareAttention instead of GATv2Conv.
+    # Needed for analog circuits where edge_feature_dim must include a
+    # matching_constraint indicator at the trailing edge-feature column.
+    use_symmetry_attention: bool = False
+
+    def validate(self) -> None:
+        if self.node_feature_dim <= 0:
+            raise ValueError("node_feature_dim must be set to a positive value")
+        if self.edge_feature_dim <= 0:
+            raise ValueError("edge_feature_dim must be positive")
+        missing = [t for t in self.active_tasks if t not in self.task_weights]
+        if missing:
+            raise ValueError(
+                f"task_weights missing entries for active tasks: {missing}"
+            )
