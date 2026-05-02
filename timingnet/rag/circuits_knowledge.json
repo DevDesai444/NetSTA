@@ -1,0 +1,454 @@
+{
+  "entries": [
+    {
+      "circuit_name": "Two-stage Miller-compensated op-amp",
+      "topology_type": "op_amp",
+      "description": "Classic two-stage CMOS op-amp: differential pair input with current-mirror load (stage 1) driving a common-source PMOS output stage (stage 2), stabilised by a Miller compensation capacitor Cc between the stage-2 output and stage-1 output.",
+      "typical_specs": {"gain_db": "60-80", "gbw_mhz": "5-50", "phase_margin_deg": "60-70", "slew_rate_v_us": "5-20"},
+      "device_count_range": [8, 12],
+      "common_issues": ["right-half-plane zero from Cc forward path", "limited slew rate at low Cc current", "PSRR degradation from M5 tail mirror"],
+      "optimization_tips": ["add nulling resistor in series with Cc to push RHP zero to LHP", "scale Cc ~0.2 * C_load for ~60° PM", "increase M5 bias to improve slew", "use cascoded mirror for higher gain"]
+    },
+    {
+      "circuit_name": "Folded cascode op-amp",
+      "topology_type": "op_amp",
+      "description": "Single-stage op-amp using folded cascode topology: NMOS input pair folds into PMOS cascode legs and NMOS cascode bias loads, all driving a single high-impedance output node.",
+      "typical_specs": {"gain_db": "70-90", "gbw_mhz": "20-200", "phase_margin_deg": "60-75", "output_swing": "Vdd-2Vov"},
+      "device_count_range": [10, 14],
+      "common_issues": ["limited output swing from stacked cascode devices", "noise from cascode bias devices", "complex biasing"],
+      "optimization_tips": ["use wide-swing cascode biasing", "minimize cascode device sizes for noise", "add gain boosting for higher Av if needed", "ensure Vbias overhead margins across PVT"]
+    },
+    {
+      "circuit_name": "Telescopic cascode op-amp",
+      "topology_type": "op_amp",
+      "description": "Single-stage cascode op-amp where all signal devices stack vertically: input pair, cascode devices, and cascode-loaded current sources in one branch per side.",
+      "typical_specs": {"gain_db": "70-90", "gbw_mhz": "50-500", "power_efficiency": "high"},
+      "device_count_range": [8, 12],
+      "common_issues": ["severely limited output swing", "common-mode input range pinned by stack", "not rail-to-rail"],
+      "optimization_tips": ["use only when output swing budget is small", "favoured for low-power and high-frequency designs", "consider folded cascode if swing is binding"]
+    },
+    {
+      "circuit_name": "Single-stage common-source amplifier",
+      "topology_type": "common_source",
+      "description": "Single NMOS or PMOS transistor with resistive or active load. Inverting voltage gain Av = -gm*Rload.",
+      "typical_specs": {"gain_db": "10-30", "bandwidth_mhz": "10-500"},
+      "device_count_range": [1, 3],
+      "common_issues": ["limited gain", "Miller effect at high frequency due to Cgd", "DC bias sensitivity"],
+      "optimization_tips": ["use active current-source load to boost output resistance", "cascade for higher gain", "add source degeneration for linearity"]
+    },
+    {
+      "circuit_name": "Differential pair input stage",
+      "topology_type": "diff_pair",
+      "description": "Matched NMOS or PMOS pair sharing a tail current source. Provides differential gain and common-mode rejection.",
+      "typical_specs": {"gain_db": "20-40", "cmrr_db": "60-90"},
+      "device_count_range": [3, 5],
+      "common_issues": ["mismatch causes input-referred offset", "common-mode range limited by Vov + Vds_sat of tail"],
+      "optimization_tips": ["use matched layout (interdigitated or common-centroid)", "increase tail device length for higher CMRR", "balance load impedances precisely"]
+    },
+    {
+      "circuit_name": "Class-AB output stage",
+      "topology_type": "output_stage",
+      "description": "Push-pull complementary NMOS/PMOS pair biased near cutoff so both devices conduct for small signals, eliminating crossover distortion.",
+      "typical_specs": {"thd_db": "-60 to -80", "drive_current_ma": "1-100"},
+      "device_count_range": [2, 8],
+      "common_issues": ["crossover distortion if quiescent bias too low", "current shoot-through if too high"],
+      "optimization_tips": ["use Vbe-multiplier or floating Vbias for stable quiescent current", "tune for ~10-20% of peak current", "monitor temperature coefficient"]
+    },
+    {
+      "circuit_name": "Rail-to-rail input op-amp",
+      "topology_type": "op_amp",
+      "description": "Op-amp with parallel NMOS and PMOS input diff pairs, switching active pair based on common-mode level for full Vss-to-Vdd input range.",
+      "typical_specs": {"input_range_v": "Vss to Vdd", "gain_db": "70-95"},
+      "device_count_range": [12, 20],
+      "common_issues": ["gm discontinuity at crossover", "offset shift between pair regions"],
+      "optimization_tips": ["use gm balancing technique to flatten gm vs Vcm", "current-steering controls handoff smoothness", "monitor offset drift across CM"]
+    },
+    {
+      "circuit_name": "Chopper-stabilised amplifier",
+      "topology_type": "op_amp",
+      "description": "Op-amp with input chopper modulation and output demodulation to up-convert offset and 1/f noise above the signal band, where it can be filtered out.",
+      "typical_specs": {"input_referred_offset_uv": "1-10", "1/f_corner_hz": "<1"},
+      "device_count_range": [16, 30],
+      "common_issues": ["residual offset from charge injection", "intermodulation with chopper harmonics", "spike at chopper frequency"],
+      "optimization_tips": ["use ripple-reduction loop", "minimise switch charge injection (dummy switches)", "filter chopper artifacts with notch or low-pass"]
+    },
+    {
+      "circuit_name": "Auto-zero amplifier",
+      "topology_type": "op_amp",
+      "description": "Switched-capacitor amplifier that samples its own offset during a calibration phase and subtracts it during signal phase.",
+      "typical_specs": {"input_referred_offset_uv": "1-20", "bandwidth_khz": "0.1-100"},
+      "device_count_range": [10, 20],
+      "common_issues": ["bandwidth halved by two-phase operation", "kT/C noise from sampling caps", "aliasing of broadband noise"],
+      "optimization_tips": ["increase sampling capacitor", "combine with chopping for lower noise floor", "use bottom-plate sampling"]
+    },
+    {
+      "circuit_name": "Current-feedback amplifier",
+      "topology_type": "op_amp",
+      "description": "Amplifier with low-impedance inverting input current sense; gain-bandwidth is largely independent of closed-loop gain due to feedback through a transimpedance node.",
+      "typical_specs": {"bandwidth_mhz": "100-1000", "slew_rate_v_us": "500-3000"},
+      "device_count_range": [10, 16],
+      "common_issues": ["feedback resistor value affects stability", "limited gain accuracy at low Rf"],
+      "optimization_tips": ["use recommended Rf from datasheet", "avoid capacitive feedback", "keep traces short to minimise stray Cf"]
+    },
+    {
+      "circuit_name": "StrongARM latched comparator",
+      "topology_type": "comparator",
+      "description": "Dynamic latched comparator: differential input pair charges internal nodes during reset, then a positive-feedback latch regenerates the small differential into rail-to-rail output during evaluation.",
+      "typical_specs": {"clock_mhz": "100-5000", "input_referred_noise_uv": "200-500", "energy_per_decision_fj": "10-100"},
+      "device_count_range": [9, 11],
+      "common_issues": ["kickback noise to input", "input-referred offset from mismatch", "metastability at small inputs"],
+      "optimization_tips": ["add preamp stage for low-input applications", "use auto-zeroing to cancel offset", "increase tail current for faster regeneration"]
+    },
+    {
+      "circuit_name": "Continuous-time comparator",
+      "topology_type": "comparator",
+      "description": "Open-loop high-gain amplifier driving an output gate; continuously evaluates input vs threshold without clocking.",
+      "typical_specs": {"propagation_delay_ns": "1-50", "hysteresis_mv": "0-20"},
+      "device_count_range": [4, 10],
+      "common_issues": ["susceptible to noise", "static power consumption", "no inherent hysteresis"],
+      "optimization_tips": ["add Schmitt-trigger hysteresis if input is noisy", "increase gm for faster response", "consider a latched topology for clocked systems"]
+    },
+    {
+      "circuit_name": "Track-and-latch comparator",
+      "topology_type": "comparator",
+      "description": "Two-phase comparator: tracks the differential input during one clock phase, then latches the decision during the next.",
+      "typical_specs": {"clock_mhz": "10-500", "metastability_window_ps": "100-1000"},
+      "device_count_range": [10, 14],
+      "common_issues": ["mismatch between track and latch phases", "kickback to driving source"],
+      "optimization_tips": ["isolate track stage from latch with a buffer", "balance phase timing carefully", "use bootstrapped switches for low-distortion tracking"]
+    },
+    {
+      "circuit_name": "Hysteretic comparator",
+      "topology_type": "comparator",
+      "description": "Comparator with two different switching thresholds (upper and lower) creating a hysteresis band that rejects noise.",
+      "typical_specs": {"hysteresis_mv": "20-200"},
+      "device_count_range": [4, 8],
+      "common_issues": ["hysteresis voltage varies with process", "trade-off between noise immunity and sensitivity"],
+      "optimization_tips": ["use Schmitt-trigger structure with positive feedback", "make hysteresis ratiometric to Vref", "trim if precision required"]
+    },
+    {
+      "circuit_name": "Preamp + latch comparator",
+      "topology_type": "comparator",
+      "description": "Two-stage comparator: a low-gain continuous preamp reduces input-referred offset of the latch and isolates kickback.",
+      "typical_specs": {"input_referred_offset_uv": "100-500", "clock_mhz": "10-500"},
+      "device_count_range": [12, 20],
+      "common_issues": ["static current in preamp", "preamp bandwidth limits comparator speed"],
+      "optimization_tips": ["pulse-bias the preamp for power savings", "auto-zero preamp offset", "match latch loading to both sides"]
+    },
+    {
+      "circuit_name": "Brokaw bandgap reference",
+      "topology_type": "bandgap",
+      "description": "Bandgap voltage reference using two bipolar transistors at different current densities to generate PTAT and VBE components that sum to a temperature-stable ~1.25V.",
+      "typical_specs": {"vref_v": "1.20-1.25", "tempco_ppm_c": "10-50", "psrr_db": "60-90"},
+      "device_count_range": [10, 16],
+      "common_issues": ["start-up failure (zero-current stable state)", "op-amp offset shifts reference", "PSRR limited by mirror matching"],
+      "optimization_tips": ["add start-up circuit (e.g. small leakage path)", "trim BJT ratio or op-amp offset", "use cascode current mirrors for PSRR"]
+    },
+    {
+      "circuit_name": "Banba sub-1V bandgap",
+      "topology_type": "bandgap",
+      "description": "Sub-1V bandgap that sums PTAT and CTAT currents (rather than voltages) through a resistor to generate any Vref below the silicon bandgap.",
+      "typical_specs": {"vref_v": "0.5-1.0", "tempco_ppm_c": "20-80"},
+      "device_count_range": [10, 14],
+      "common_issues": ["higher resistor area than Brokaw", "more sensitive to op-amp offset", "needs careful resistor matching"],
+      "optimization_tips": ["use poly resistor ladder for matching", "interdigitated resistor layout", "trim post-fabrication"]
+    },
+    {
+      "circuit_name": "Curvature-corrected bandgap",
+      "topology_type": "bandgap",
+      "description": "Bandgap reference with extra correction loop that cancels the second-order temperature curvature of VBE for ultra-flat Vref(T).",
+      "typical_specs": {"vref_v": "1.2", "tempco_ppm_c": "1-10"},
+      "device_count_range": [16, 28],
+      "common_issues": ["complex trimming", "added area and power", "interaction between correction loops"],
+      "optimization_tips": ["use piecewise-linear correction segments", "trim at multiple temperatures", "validate over PVT with Monte Carlo"]
+    },
+    {
+      "circuit_name": "Switched-capacitor bandgap",
+      "topology_type": "bandgap",
+      "description": "Discrete-time bandgap using switched capacitors to generate ratiometric VBE and PTAT terms with very low offset.",
+      "typical_specs": {"vref_v": "1.2", "tempco_ppm_c": "5-30"},
+      "device_count_range": [16, 24],
+      "common_issues": ["clock feed-through ripple", "kT/C noise", "settling time"],
+      "optimization_tips": ["bottom-plate sampling", "longer settling phase", "post-filter Vref"]
+    },
+    {
+      "circuit_name": "Low-power bandgap reference",
+      "topology_type": "bandgap",
+      "description": "Bandgap targeting sub-µA quiescent current using sub-threshold BJTs or MOS-based VTH-extraction; key for IoT and energy-harvesting.",
+      "typical_specs": {"iq_na": "100-1000", "tempco_ppm_c": "30-200"},
+      "device_count_range": [8, 14],
+      "common_issues": ["start-up reliability", "leakage variability", "high output impedance"],
+      "optimization_tips": ["robust start-up with brown-out logic", "buffer Vref before loading", "characterise leakage across temperature"]
+    },
+    {
+      "circuit_name": "PMOS pass-LDO",
+      "topology_type": "ldo",
+      "description": "Low-dropout regulator with PMOS pass transistor controlled by an error amplifier; supports low dropout because PMOS is in common-source with Vsg headroom.",
+      "typical_specs": {"dropout_mv": "100-300", "psrr_db": "40-80", "load_regulation_uv_ma": "10-200"},
+      "device_count_range": [12, 20],
+      "common_issues": ["stability dominated by output cap ESR", "PSRR degrades at high frequency", "load transient overshoot"],
+      "optimization_tips": ["place output cap ESR in stability zone", "feed-forward zero compensation", "add buffer between EA and pass-FET gate"]
+    },
+    {
+      "circuit_name": "NMOS source-follower LDO",
+      "topology_type": "ldo",
+      "description": "LDO using NMOS source follower as pass device; low output impedance simplifies compensation but requires a higher gate-drive voltage above Vout.",
+      "typical_specs": {"dropout_mv": "200-500", "psrr_db": "30-60"},
+      "device_count_range": [10, 16],
+      "common_issues": ["needs charge pump or higher rail for gate drive", "lower efficiency at low headroom"],
+      "optimization_tips": ["use boosted gate driver", "dynamic biasing during transients", "small-area design for digital LDOs"]
+    },
+    {
+      "circuit_name": "Cap-less LDO",
+      "topology_type": "ldo",
+      "description": "LDO without external output capacitor; stability provided by internal compensation network. Suited to on-chip integration.",
+      "typical_specs": {"transient_response_ns": "50-500", "iq_ua": "5-100"},
+      "device_count_range": [16, 30],
+      "common_issues": ["transient response sensitive to load step", "higher quiescent current needed for fast loop"],
+      "optimization_tips": ["use adaptive bias on transient", "high gm pass device", "careful Miller compensation tuning"]
+    },
+    {
+      "circuit_name": "Digital LDO",
+      "topology_type": "ldo",
+      "description": "LDO with digital control loop: ADC samples Vout, digital controller adjusts an array of binary-weighted PMOS pass transistors.",
+      "typical_specs": {"sample_clock_mhz": "5-100", "load_current_ma": "1-100"},
+      "device_count_range": [50, 200],
+      "common_issues": ["limit-cycle oscillation", "quantisation ripple", "ADC offset"],
+      "optimization_tips": ["dithering or asynchronous logic to reduce limit cycles", "interleave multiple loops for faster response", "extend ADC resolution under load steps"]
+    },
+    {
+      "circuit_name": "Adaptive-bias LDO",
+      "topology_type": "ldo",
+      "description": "LDO whose error-amplifier quiescent current scales with load current, improving transient response without continuous high IQ.",
+      "typical_specs": {"iq_ua_no_load": "1-10", "iq_ua_full_load": "10-100"},
+      "device_count_range": [16, 24],
+      "common_issues": ["stability changes with load", "trade-off between IQ scaling and PSRR"],
+      "optimization_tips": ["use frequency-compensation that tracks bias", "load sensing via Iout mirror", "ensure stability across all load states"]
+    },
+    {
+      "circuit_name": "Ring oscillator",
+      "topology_type": "oscillator",
+      "description": "Odd number of inverters in a ring, naturally oscillating at f = 1/(2*N*td) where td is per-stage delay.",
+      "typical_specs": {"freq_mhz": "10-5000", "phase_noise_dbc_hz": "-80 to -100 (at 1MHz offset)"},
+      "device_count_range": [6, 30],
+      "common_issues": ["high phase noise", "supply-sensitive frequency", "process spread of td"],
+      "optimization_tips": ["use differential inverter stages for better PSRR", "regulate supply via LDO", "calibrate via DLL or PLL lock"]
+    },
+    {
+      "circuit_name": "LC tank oscillator",
+      "topology_type": "oscillator",
+      "description": "Oscillator using on-chip inductor and capacitor (LC tank) with cross-coupled NMOS or NMOS+PMOS negative-gm pair to sustain oscillation.",
+      "typical_specs": {"freq_ghz": "1-30", "phase_noise_dbc_hz": "-110 to -140 (at 1MHz)"},
+      "device_count_range": [4, 10],
+      "common_issues": ["large inductor area", "Q factor degraded by metal losses", "frequency pulling from output buffers"],
+      "optimization_tips": ["thick top metal for high Q", "differential layout to suppress common-mode", "tune varactor for desired FTR"]
+    },
+    {
+      "circuit_name": "RC relaxation oscillator",
+      "topology_type": "oscillator",
+      "description": "Capacitor charged/discharged through a resistor with a comparator and reset switch sets the oscillation period T ≈ R*C.",
+      "typical_specs": {"freq_khz": "1-1000", "tempco_ppm_c": "100-500"},
+      "device_count_range": [8, 20],
+      "common_issues": ["temperature dependence of R and C", "comparator delay affects period", "noise on threshold causes jitter"],
+      "optimization_tips": ["use trimmed R and C", "stable Vref via bandgap", "switch trim bits at temperature steps"]
+    },
+    {
+      "circuit_name": "Crystal oscillator buffer",
+      "topology_type": "oscillator",
+      "description": "Pierce-style oscillator using an external quartz crystal as the high-Q resonant element, with on-chip CMOS inverter and load caps.",
+      "typical_specs": {"freq_mhz": "1-50", "stability_ppm": "20-100"},
+      "device_count_range": [4, 8],
+      "common_issues": ["crystal not oscillating at start", "drive level too high (crystal damage)", "load cap mismatch"],
+      "optimization_tips": ["use AGC to limit drive level", "tune load caps to crystal CL spec", "add ESD-rated pins"]
+    },
+    {
+      "circuit_name": "Quadrature LC VCO",
+      "topology_type": "oscillator",
+      "description": "Two LC VCOs coupled in quadrature via NMOS coupling devices producing I/Q outputs 90° apart, used in IQ transceivers.",
+      "typical_specs": {"freq_ghz": "1-10", "i_q_amplitude_imbalance_db": "<0.2", "i_q_phase_imbalance_deg": "<2"},
+      "device_count_range": [10, 18],
+      "common_issues": ["coupling factor trade-off between I/Q accuracy and phase noise", "ambiguous oscillation modes", "asymmetric layout breaks balance"],
+      "optimization_tips": ["common-centroid placement of two cores", "tune coupling current carefully", "use mode-locking detector"]
+    },
+    {
+      "circuit_name": "SAR ADC comparator",
+      "topology_type": "adc_block",
+      "description": "Comparator at the heart of a SAR ADC: decides MSB-first whether the DAC output is above or below Vin during each bit trial.",
+      "typical_specs": {"clock_mhz": "50-1000", "input_referred_noise_uv": "100-500"},
+      "device_count_range": [9, 15],
+      "common_issues": ["metastability affects ENOB", "input-referred offset shifts INL", "kickback to DAC"],
+      "optimization_tips": ["use StrongARM topology for low energy", "auto-zero or chopper-stabilise", "isolate input via small preamp"]
+    },
+    {
+      "circuit_name": "Pipelined ADC stage",
+      "topology_type": "adc_block",
+      "description": "Per-stage block of a pipelined ADC: sample-and-hold, sub-ADC (flash), DAC subtraction, residue amplification.",
+      "typical_specs": {"stage_resolution_bits": "1-4", "gain_error_lsb": "<0.5"},
+      "device_count_range": [40, 100],
+      "common_issues": ["op-amp gain error in residue amplifier", "capacitor mismatch in MDAC", "comparator metastability propagation"],
+      "optimization_tips": ["digital calibration for gain error", "common-centroid capacitor layout", "redundancy bits between stages"]
+    },
+    {
+      "circuit_name": "Sigma-delta integrator",
+      "topology_type": "adc_block",
+      "description": "Switched-capacitor or continuous-time integrator forming the core of a sigma-delta modulator; output shape determines noise transfer function.",
+      "typical_specs": {"oversampling_ratio": "16-256", "noise_floor_dbfs": "-90 to -120"},
+      "device_count_range": [20, 40],
+      "common_issues": ["op-amp finite-gain leakage degrades NTF", "kT/C noise from sampling cap", "linearity of feedback DAC"],
+      "optimization_tips": ["high DC gain op-amp (>80dB)", "increase sampling cap to drop kT/C noise", "dynamic element matching in feedback DAC"]
+    },
+    {
+      "circuit_name": "Flash ADC bank",
+      "topology_type": "adc_block",
+      "description": "Parallel array of 2^N − 1 comparators, each comparing Vin against a tap of a resistor reference ladder, for N-bit conversion in one clock.",
+      "typical_specs": {"clock_ghz": "1-10", "resolution_bits": "3-6"},
+      "device_count_range": [80, 500],
+      "common_issues": ["large area and power", "input capacitance scales with comparators", "metastability across many decisions"],
+      "optimization_tips": ["interpolating preamps to halve comparator count", "averaging for offset reduction", "track-and-hold front-end"]
+    },
+    {
+      "circuit_name": "Bootstrap switch",
+      "topology_type": "adc_block",
+      "description": "Sampling switch whose gate voltage tracks the input plus a fixed offset (via a bootstrapped capacitor) for nearly constant on-resistance across input range.",
+      "typical_specs": {"on_resistance_ohm": "10-200", "linearity_db": "-90 to -120"},
+      "device_count_range": [6, 12],
+      "common_issues": ["clock feedthrough", "reliability under high VGS", "charge injection"],
+      "optimization_tips": ["use thick-oxide reliability device for switch", "dummy switches for charge cancellation", "match clock edges for low jitter"]
+    },
+    {
+      "circuit_name": "Inverter (INV)",
+      "topology_type": "std_cell",
+      "description": "Basic CMOS inverter: PMOS pull-up + NMOS pull-down. Building block of all digital logic.",
+      "typical_specs": {"propagation_delay_ps": "10-50", "input_cap_ff": "0.5-5"},
+      "device_count_range": [2, 2],
+      "common_issues": ["short-circuit current during transition", "noise from coupling", "sensitive to PVT"],
+      "optimization_tips": ["size PMOS ~2× NMOS for equal rise/fall", "buffer chains use beta ~4 fan-out per stage", "use multi-Vt for power vs speed"]
+    },
+    {
+      "circuit_name": "NAND2",
+      "topology_type": "std_cell",
+      "description": "Two-input NAND: series NMOS pair + parallel PMOS pair. Universal logic gate.",
+      "typical_specs": {"propagation_delay_ps": "20-80", "input_cap_ff": "1-8"},
+      "device_count_range": [4, 4],
+      "common_issues": ["asymmetric input delays (A vs B)", "series NMOS slows pull-down", "Miller coupling between inputs"],
+      "optimization_tips": ["balance series-N stack via sizing", "place critical signal on inner input", "use NAND chains for fast inverting logic"]
+    },
+    {
+      "circuit_name": "NOR2",
+      "topology_type": "std_cell",
+      "description": "Two-input NOR: series PMOS + parallel NMOS. Slower than NAND2 due to series PMOS resistance.",
+      "typical_specs": {"propagation_delay_ps": "30-100", "input_cap_ff": "1-10"},
+      "device_count_range": [4, 4],
+      "common_issues": ["series PMOS bottleneck", "rise time slower than fall", "prone to body effect"],
+      "optimization_tips": ["avoid critical paths if speed-bound; use NAND-based equivalent", "size PMOS larger to compensate", "shallow PMOS in low-Vt for high speed"]
+    },
+    {
+      "circuit_name": "XOR2",
+      "topology_type": "std_cell",
+      "description": "Two-input XOR: typical CMOS implementation uses transmission gates or pass-transistor logic; widely used in adders and parity logic.",
+      "typical_specs": {"propagation_delay_ps": "40-150", "input_cap_ff": "1-15"},
+      "device_count_range": [8, 12],
+      "common_issues": ["heavy load on internal nodes", "glitching from input skew", "static leakage in TG implementations"],
+      "optimization_tips": ["use TG-XOR for low transistor count", "balance both inputs to reduce skew-induced glitches", "buffer internal nodes for fan-out >4"]
+    },
+    {
+      "circuit_name": "D Flip-flop (DFF)",
+      "topology_type": "std_cell",
+      "description": "Master-slave latch storing one bit on the clock edge; basis of pipelined and sequential digital logic.",
+      "typical_specs": {"setup_time_ps": "20-100", "hold_time_ps": "0-50", "clk_to_q_ps": "30-150"},
+      "device_count_range": [16, 24],
+      "common_issues": ["setup-time violation on slow paths", "hold-time violation on fast paths", "clock-skew sensitivity"],
+      "optimization_tips": ["use buffer trees to balance clock arrival", "set hold-time margin with delay cells", "scan-DFF for testability"]
+    },
+    {
+      "circuit_name": "Latch (level-sensitive)",
+      "topology_type": "std_cell",
+      "description": "Transparent latch: passes input to output when enable is high, holds value when low.",
+      "typical_specs": {"delay_ps": "10-50"},
+      "device_count_range": [4, 8],
+      "common_issues": ["transparency window creates timing complications", "needs careful clocking", "time-borrowing analysis required"],
+      "optimization_tips": ["use only when needed (e.g. pulsed latch designs)", "ensure designers know latch timing semantics", "avoid in pipelined paths without time-borrowing"]
+    },
+    {
+      "circuit_name": "MUX21 (2:1 multiplexer)",
+      "topology_type": "std_cell",
+      "description": "Selects between two inputs based on a select line; can be built from TGs or AOI gates.",
+      "typical_specs": {"delay_ps": "30-120"},
+      "device_count_range": [6, 12],
+      "common_issues": ["select-to-output delay can dominate path", "data input glitches propagate", "TG version has finite on-resistance"],
+      "optimization_tips": ["use AOI-based MUX for higher drive", "balance both data inputs for skew", "register the select if possible"]
+    },
+    {
+      "circuit_name": "Buffer (BUF / clock buffer)",
+      "topology_type": "std_cell",
+      "description": "Two cascaded inverters providing drive strength multiplication and signal restoration; used in clock trees and fan-out chains.",
+      "typical_specs": {"delay_ps": "30-100", "drive_strength": "1x to 32x"},
+      "device_count_range": [4, 6],
+      "common_issues": ["choosing optimal fan-out (β~4) for delay-energy", "skew in clock buffers", "supply noise coupling"],
+      "optimization_tips": ["use logical-effort sizing for delay-optimal chains", "match drive on differential clocks", "shield clock nets"]
+    },
+    {
+      "circuit_name": "Half adder",
+      "topology_type": "arithmetic",
+      "description": "Combinational logic with two inputs and two outputs (sum = XOR, carry = AND); building block of full adders.",
+      "typical_specs": {"delay_ps": "60-200"},
+      "device_count_range": [10, 14],
+      "common_issues": ["carry-out path is slow without optimisation", "high power if not gated"],
+      "optimization_tips": ["use carry-save structures for multi-bit", "AOI-compressed implementations save area", "clock-gate when idle"]
+    },
+    {
+      "circuit_name": "Full adder",
+      "topology_type": "arithmetic",
+      "description": "Three-input adder (A, B, Cin) producing Sum and Cout; basis of ripple-carry and carry-look-ahead adders.",
+      "typical_specs": {"delay_ps": "100-400"},
+      "device_count_range": [20, 32],
+      "common_issues": ["carry-chain delay dominates in ripple form", "leakage in deep stacks", "glitch power in carry propagation"],
+      "optimization_tips": ["use CLA or carry-skip for wide adders", "mirror full-adder topology saves transistors", "low-leakage Vt on idle gates"]
+    },
+    {
+      "circuit_name": "Setup-time path",
+      "topology_type": "timing_path",
+      "description": "Data path that must arrive at the destination flop's D input before the launching clock edge (minus setup time) to meet timing.",
+      "typical_specs": {"slack_ps_margin": "10-100"},
+      "device_count_range": [5, 30],
+      "common_issues": ["setup slack negative when path delay too long", "PVT corners tighten margin", "useful-skew can help"],
+      "optimization_tips": ["upsize gates on critical path", "logic restructuring (rebalancing)", "useful-skew clocking", "lower-Vt cells on tight paths"]
+    },
+    {
+      "circuit_name": "Hold-time path",
+      "topology_type": "timing_path",
+      "description": "Data must hold stable at the destination flop for a hold time after the clock edge; fast paths violate hold if launch propagates faster than the clock skew.",
+      "typical_specs": {"slack_ps_margin": "5-50"},
+      "device_count_range": [3, 20],
+      "common_issues": ["hold-time violations on short paths", "clock skew misalignment", "fix at the cost of dynamic power"],
+      "optimization_tips": ["insert buffer or delay cells on launch side", "use high-Vt cells to slow short paths", "balance skew via CTS"]
+    },
+    {
+      "circuit_name": "Clock skew compensation",
+      "topology_type": "timing_path",
+      "description": "Adjust per-flop clock arrival times to push slack from tight paths to slack paths, expanding setup/hold margins where most useful.",
+      "typical_specs": {"skew_budget_ps": "<200"},
+      "device_count_range": [10, 50],
+      "common_issues": ["over-skewing creates hold problems elsewhere", "PVT-sensitive skew", "manual skew is hard to maintain"],
+      "optimization_tips": ["useful-skew CTS algorithm", "monitor min/max corner balance", "automate via STA-driven skew assignment"]
+    },
+    {
+      "circuit_name": "Critical-path identification",
+      "topology_type": "timing_path",
+      "description": "STA reports the longest combinational path from any flop output to the next flop input; this is the path that limits clock frequency.",
+      "typical_specs": {"path_count_top_n": "10-100"},
+      "device_count_range": [5, 50],
+      "common_issues": ["false paths inflate the report", "multi-mode multi-corner explosion", "path-based vs graph-based slack differences"],
+      "optimization_tips": ["set false-path constraints carefully", "use path-based analysis (PBA) for accuracy", "GNN-based critical-path prediction can pre-screen risky paths"]
+    },
+    {
+      "circuit_name": "Multicycle paths",
+      "topology_type": "timing_path",
+      "description": "Paths constrained to take more than one clock cycle (e.g. between flops in different clock domains or with explicit multicycle constraints).",
+      "typical_specs": {"multicycle_factor": "2-8"},
+      "device_count_range": [5, 40],
+      "common_issues": ["forgotten multicycle constraint inflates effort to no benefit", "hold-time still must meet 1-cycle rule unless adjusted"],
+      "optimization_tips": ["document multicycle paths in SDC", "verify both setup and hold multicycle specs", "minimise multicycle use; restructure when possible"]
+    }
+  ]
+}
