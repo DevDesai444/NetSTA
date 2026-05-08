@@ -1,0 +1,203 @@
+{
+  "config": {
+    "data_dir": "data",
+    "num_circuits": 1000,
+    "epochs": 200,
+    "batch_size": 16,
+    "patience": 25,
+    "warmup_epochs": 5,
+    "seed": 42,
+    "device": "auto"
+  },
+  "reference": "Full Model (reference)",
+  "results": [
+    {
+      "name": "Full Model (reference)",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 4,
+        "num_heads": 4,
+        "use_residual": true,
+        "use_attention": true,
+        "tasks": [
+          "slack",
+          "critical_path"
+        ]
+      },
+      "params": 472322,
+      "best_val_loss": 0.20476169288158416,
+      "best_epoch": 32,
+      "slack_mse": 0.048297801223999695,
+      "slack_r2": 0.6502844016729139,
+      "cp_accuracy": 0.8617332035053554,
+      "cp_f1": 0.5114678899082569
+    },
+    {
+      "name": "No edge features",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 4,
+        "num_heads": 4,
+        "use_residual": true,
+        "use_attention": true,
+        "tasks": [
+          "slack",
+          "critical_path"
+        ]
+      },
+      "params": 472322,
+      "best_val_loss": 0.20510757565498353,
+      "best_epoch": 46,
+      "slack_mse": 0.048031182722736494,
+      "slack_r2": 0.6522149377704455,
+      "cp_accuracy": 0.8539435248296008,
+      "cp_f1": 0.49814126394052044
+    },
+    {
+      "name": "No residual connections",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 4,
+        "num_heads": 4,
+        "use_residual": false,
+        "use_attention": true,
+        "tasks": [
+          "slack",
+          "critical_path"
+        ]
+      },
+      "params": 472322,
+      "best_val_loss": 0.20487363040447235,
+      "best_epoch": 67,
+      "slack_mse": 0.04808781063408457,
+      "slack_r2": 0.6518049053590887,
+      "cp_accuracy": 0.8591366439467706,
+      "cp_f1": 0.5079365079365079
+    },
+    {
+      "name": "No attention",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 4,
+        "num_heads": 4,
+        "use_residual": true,
+        "use_attention": false,
+        "tasks": [
+          "slack",
+          "critical_path"
+        ]
+      },
+      "params": 306434,
+      "best_val_loss": 0.204125839471817,
+      "best_epoch": 86,
+      "slack_mse": 0.04887474546128348,
+      "slack_r2": 0.6461068533367631,
+      "cp_accuracy": 0.8649789029535865,
+      "cp_f1": 0.5166537567776917
+    },
+    {
+      "name": "2 layers",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 2,
+        "num_heads": 4,
+        "use_residual": true,
+        "use_attention": true,
+        "tasks": [
+          "slack",
+          "critical_path"
+        ]
+      },
+      "params": 204546,
+      "best_val_loss": 0.20517856180667876,
+      "best_epoch": 65,
+      "slack_mse": 0.048524626567517576,
+      "slack_r2": 0.6486420005963887,
+      "cp_accuracy": 0.8660608027696636,
+      "cp_f1": 0.5182879377431907
+    },
+    {
+      "name": "6 layers",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 6,
+        "num_heads": 4,
+        "use_residual": true,
+        "use_attention": true,
+        "tasks": [
+          "slack",
+          "critical_path"
+        ]
+      },
+      "params": 740098,
+      "best_val_loss": 0.20541228353977203,
+      "best_epoch": 34,
+      "slack_mse": 0.0485390792339719,
+      "slack_r2": 0.6485373514660264,
+      "cp_accuracy": 0.8637888131559017,
+      "cp_f1": 0.5148362235067437
+    },
+    {
+      "name": "No gate type features",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 4,
+        "num_heads": 4,
+        "use_residual": true,
+        "use_attention": true,
+        "tasks": [
+          "slack",
+          "critical_path"
+        ]
+      },
+      "params": 472322,
+      "best_val_loss": 0.634048455953598,
+      "best_epoch": 1,
+      "slack_mse": 0.1431106387931985,
+      "slack_r2": -0.03623811859297432,
+      "cp_accuracy": 0.7183814778751487,
+      "cp_f1": 0.28782489740082084
+    },
+    {
+      "name": "No load capacitance",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 4,
+        "num_heads": 4,
+        "use_residual": true,
+        "use_attention": true,
+        "tasks": [
+          "slack",
+          "critical_path"
+        ]
+      },
+      "params": 472322,
+      "best_val_loss": 0.20511631816625595,
+      "best_epoch": 32,
+      "slack_mse": 0.0481568877113372,
+      "slack_r2": 0.6513047308006228,
+      "cp_accuracy": 0.8602185437628476,
+      "cp_f1": 0.5091185410334347
+    },
+    {
+      "name": "Single task (slack only)",
+      "config": {
+        "hidden_dim": 64,
+        "num_layers": 4,
+        "num_heads": 4,
+        "use_residual": true,
+        "use_attention": true,
+        "tasks": [
+          "slack"
+        ]
+      },
+      "params": 455809,
+      "best_val_loss": 0.04384968467056751,
+      "best_epoch": 86,
+      "slack_mse": 0.04696556822791917,
+      "slack_r2": 0.6599308586032115,
+      "cp_accuracy": NaN,
+      "cp_f1": NaN
+    }
+  ]
+}
