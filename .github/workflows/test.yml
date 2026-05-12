@@ -1,0 +1,52 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor declared in pyproject.toml. 3.11 matches the
+        # development environment; if anything diverges between them we want
+        # to know in CI rather than from a user bug report.
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install build deps + project (with rag + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          # PyTorch / PyG CPU wheels first.
+          pip install -r requirements.txt
+          # Optional extras needed by the test suite (RAG + similarity tests).
+          pip install -e ".[rag,dev,ml-extras]"
+
+      - name: Show installed versions
+        run: |
+          python -c "import torch, torch_geometric; print('torch', torch.__version__, 'pyg', torch_geometric.__version__)"
+          python -c "import chromadb, sentence_transformers; print('chroma', chromadb.__version__, 'st', sentence_transformers.__version__)"
+
+      - name: Run pytest with coverage
+        run: |
+          python -m pytest tests/ -v --tb=short \
+                 --cov=timingnet --cov=netsta --cov-report=xml --cov-report=term
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: ignore
