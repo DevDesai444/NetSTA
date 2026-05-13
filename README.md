@@ -20,7 +20,7 @@ epochs, seed 42 with 5-seed robustness sub-run, GPU-trained on Kaggle).
 See `results/BENCHMARK_REPORT.md` for the compiled report or the underlying
 JSON files in `results/*.json`.
 
-### Headline findings (honest)
+### Headline findings
 
 1. **The graph-blind MLP beats every GNN** on slack regression
    (MLP R² = **0.692** vs NetSTA R² = **0.642**). The dataset's
