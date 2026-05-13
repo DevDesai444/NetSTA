@@ -2,8 +2,8 @@
 
 import pytest
 
-from timingnet.analog_circuit_gen import ANALOG_TOPOLOGIES, generate_analog_circuit
-from timingnet.circuit_gen import Circuit, generate_circuit
+from netsta.analog_circuit_gen import ANALOG_TOPOLOGIES, generate_analog_circuit
+from netsta.circuit_gen import Circuit, generate_circuit
 
 
 # ---------------------------------------------------------------------------

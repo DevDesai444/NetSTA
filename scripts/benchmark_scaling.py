@@ -35,12 +35,12 @@ from _bench_utils import (
     write_markdown_table,
 )
 
-from timingnet.circuit_gen import generate_circuit
-from timingnet.dataset import NetSTAAugment, TimingNetDataset
-from timingnet.evaluate import classification_metrics, regression_metrics
-from timingnet.graph_builder import circuit_to_pyg
-from timingnet.sta import run_sta
-from timingnet.train import _select_device
+from netsta.circuit_gen import generate_circuit
+from netsta.dataset import NetSTAAugment, NetSTADataset
+from netsta.evaluate import classification_metrics, regression_metrics
+from netsta.graph_builder import circuit_to_pyg
+from netsta.sta import run_sta
+from netsta.train import _select_device
 
 
 def _matplotlib():
@@ -142,7 +142,7 @@ def main():
 
     pool_size = max(args.max_circuits, max(data_sizes) + int(0.3 * args.max_circuits))
     print(f"Generating dataset pool: {pool_size} circuits")
-    dataset = TimingNetDataset(root=args.data_dir, num_circuits=pool_size, seed=args.seed)
+    dataset = NetSTADataset(root=args.data_dir, num_circuits=pool_size, seed=args.seed)
     sample = dataset[0]
     node_feature_dim = sample.x.size(1)
     edge_feature_dim = sample.edge_attr.size(1) if sample.edge_attr.dim() > 1 else 1

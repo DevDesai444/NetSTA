@@ -19,7 +19,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from .config import NetSTAConfig
-from .dataset import TimingNetDataset, TransformSubset
+from .dataset import NetSTADataset, TransformSubset
 from .model import NetSTAModel
 from .train import TARGET_KEY, _select_device
 
@@ -239,7 +239,7 @@ def evaluate(
     print(f"Active tasks: {list(config.active_tasks)}")
 
     # Recreate the same train/val/test split used in train.py
-    dataset = TimingNetDataset(root=data_dir, num_circuits=num_circuits, seed=seed)
+    dataset = NetSTADataset(root=data_dir, num_circuits=num_circuits, seed=seed)
     n = len(dataset)
     n_train = int(0.7 * n)
     n_val = int(0.15 * n)

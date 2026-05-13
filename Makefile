@@ -29,7 +29,7 @@ install-dev: install
 	$(PIP) install -e ".[rag,demo,dev,ml-extras]"
 
 train:
-	$(PY) -m timingnet.train \
+	$(PY) -m netsta.train \
 	    --tasks $(TASKS) \
 	    --num-circuits $(NUM_CIRCUITS) \
 	    --epochs $(EPOCHS)
@@ -45,7 +45,7 @@ demo:
 	$(PY) -m streamlit run app.py
 
 lint:
-	$(PY) -m py_compile $(shell find timingnet netsta scripts -name '*.py')
+	$(PY) -m py_compile $(shell find netsta netsta scripts -name '*.py')
 	@echo "lint: all source modules compile OK"
 
 clean:

@@ -2,7 +2,7 @@
 PyTorch Geometric dataset for NetSTA.
 
 Generates or loads synthetic circuits with STA ground truth. Provides:
-  - TimingNetDataset: cached per-circuit dataset, schema-versioned so stale
+  - NetSTADataset: cached per-circuit dataset, schema-versioned so stale
     caches built before y_congestion auto-regenerate.
   - NetSTAAugment: random per-graph node-feature noise + edge dropout for
     training-time augmentation.
@@ -74,7 +74,7 @@ class TransformSubset:
         return data
 
 
-class TimingNetDataset:
+class NetSTADataset:
     """
     Dataset of synthetic circuits with STA ground truth.
 
@@ -256,7 +256,7 @@ class MixedCircuitDataset:
                  force_regenerate=False, analog_fraction: float = 0.5):
         n_analog = max(1, int(num_circuits * analog_fraction))
         n_digital = max(1, num_circuits - n_analog)
-        self.digital = TimingNetDataset(
+        self.digital = NetSTADataset(
             root=os.path.join(root, "digital"),
             num_circuits=n_digital, seed=seed,
             force_regenerate=force_regenerate,

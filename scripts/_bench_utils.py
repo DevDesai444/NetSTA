@@ -20,10 +20,10 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import torch
 from torch_geometric.loader import DataLoader
 
-from timingnet.config import NetSTAConfig
-from timingnet.dataset import TimingNetDataset, TransformSubset
-from timingnet.model import NetSTAModel
-from timingnet.train import (
+from netsta.config import NetSTAConfig
+from netsta.dataset import NetSTADataset, TransformSubset
+from netsta.model import NetSTAModel
+from netsta.train import (
     TARGET_KEY,
     _build_scheduler,
     _resolve_task_weights,

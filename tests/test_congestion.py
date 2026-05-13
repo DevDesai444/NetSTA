@@ -2,9 +2,9 @@
 
 import numpy as np
 
-from timingnet.circuit_gen import generate_circuit
-from timingnet.congestion import compute_demand_grid, compute_rudy_congestion
-from timingnet.drc import HOTSPOT_FACTOR, TRACKS_PER_CELL, compute_drc_labels
+from netsta.circuit_gen import generate_circuit
+from netsta.congestion import compute_demand_grid, compute_rudy_congestion
+from netsta.drc import HOTSPOT_FACTOR, TRACKS_PER_CELL, compute_drc_labels
 
 
 def test_compute_demand_grid_matches_grid_size(sample_digital_circuit):

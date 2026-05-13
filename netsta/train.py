@@ -24,7 +24,7 @@ from .dataset import (
     AnalogCircuitDataset,
     MixedCircuitDataset,
     NetSTAAugment,
-    TimingNetDataset,
+    NetSTADataset,
     TransformSubset,
 )
 from .model import NetSTAModel
@@ -266,7 +266,7 @@ def train(
     print(f"Preparing dataset ({num_circuits} circuits, type={circuit_type}, "
           f"load_cached={load_cached})...")
     if circuit_type == "digital":
-        dataset = TimingNetDataset(
+        dataset = NetSTADataset(
             root=data_dir, num_circuits=num_circuits, seed=seed,
             force_regenerate=not load_cached,
         )

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
 
-# Defaults below match the original TimingNet setup so the existing
+# Defaults below match the original NetSTA setup so the existing
 # training pipeline reproduces prior results when no overrides are passed.
 DEFAULT_TASK_WEIGHTS: Dict[str, float] = {
     "slack": 0.5,

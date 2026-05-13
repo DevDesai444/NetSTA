@@ -1,16 +1,16 @@
-"""Generate training data for TimingNet."""
+"""Generate training data for NetSTA."""
 
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from timingnet.dataset import TimingNetDataset
+from netsta.dataset import NetSTADataset
 
 
 def main():
-    print("Generating TimingNet dataset...")
-    dataset = TimingNetDataset(
+    print("Generating NetSTA dataset...")
+    dataset = NetSTADataset(
         root="data",
         num_circuits=500,
         min_gates=15,

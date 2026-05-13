@@ -41,7 +41,7 @@ jobs:
       - name: Run pytest with coverage
         run: |
           python -m pytest tests/ -v --tb=short \
-                 --cov=timingnet --cov=netsta --cov-report=xml --cov-report=term
+                 --cov=netsta --cov=netsta --cov-report=xml --cov-report=term
 
       - name: Upload coverage artifact
         if: always()

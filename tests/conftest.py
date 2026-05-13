@@ -33,7 +33,7 @@ def project_root() -> Path:
 @pytest.fixture
 def sample_digital_circuit():
     """Small deterministic digital circuit."""
-    from timingnet.circuit_gen import generate_circuit
+    from netsta.circuit_gen import generate_circuit
     return generate_circuit(
         num_inputs=4, num_gates=10, num_outputs=2,
         seed=42, name="test_digital",
@@ -43,23 +43,23 @@ def sample_digital_circuit():
 @pytest.fixture
 def sample_analog_circuit():
     """Differential-pair analog circuit (has matched-pair symmetry groups)."""
-    from timingnet.analog_circuit_gen import generate_analog_circuit
+    from netsta.analog_circuit_gen import generate_analog_circuit
     return generate_analog_circuit(seed=42, topology="diff_pair")
 
 
 @pytest.fixture
 def sample_pyg_data(sample_digital_circuit):
-    from timingnet.graph_builder import circuit_to_pyg
-    from timingnet.sta import run_sta
+    from netsta.graph_builder import circuit_to_pyg
+    from netsta.sta import run_sta
     return circuit_to_pyg(sample_digital_circuit, run_sta(sample_digital_circuit))
 
 
 @pytest.fixture
 def small_dataset():
     """Three small in-memory digital circuits as PyG Data objects."""
-    from timingnet.circuit_gen import generate_circuit
-    from timingnet.graph_builder import circuit_to_pyg
-    from timingnet.sta import run_sta
+    from netsta.circuit_gen import generate_circuit
+    from netsta.graph_builder import circuit_to_pyg
+    from netsta.sta import run_sta
     out = []
     for seed in (1, 2, 3):
         c = generate_circuit(
@@ -78,7 +78,7 @@ def small_dataset():
 @pytest.fixture
 def tiny_config():
     """Fast-to-construct config used by every forward-pass test."""
-    from timingnet.config import NetSTAConfig
+    from netsta.config import NetSTAConfig
     return NetSTAConfig(
         node_feature_dim=31,
         edge_feature_dim=5,
@@ -99,7 +99,7 @@ def tiny_config():
 @pytest.fixture
 def untrained_model(tiny_config):
     """Fresh NetSTAModel — random init, no checkpoint dependency."""
-    from timingnet.model import NetSTAModel
+    from netsta.model import NetSTAModel
     torch.manual_seed(0)
     return NetSTAModel(tiny_config)
 

@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from timingnet.config import NetSTAConfig
-from timingnet.model import (
+from netsta.config import NetSTAConfig
+from netsta.model import (
     AnalogPerformanceHead,
     CongestionHead,
     CriticalPathHead,
@@ -149,7 +149,7 @@ def test_symmetry_aware_attention_swap(tiny_config, sample_pyg_data):
     """Asking for symmetry attention should swap the backbone layers and still
     produce a valid forward pass."""
     from dataclasses import replace
-    from timingnet.model import NetSTAModel, SymmetryAwareAttention
+    from netsta.model import NetSTAModel, SymmetryAwareAttention
     cfg = replace(tiny_config, use_symmetry_attention=True)
     model = NetSTAModel(cfg)
     # First conv layer is now SymmetryAwareAttention rather than GATv2Conv.

@@ -35,10 +35,10 @@ from _bench_utils import (
     write_markdown_table,
 )
 
-from timingnet.baselines import GCNBaseline, GraphSAGEBaseline, MLPBaseline
-from timingnet.dataset import TimingNetDataset
-from timingnet.evaluate import classification_metrics, regression_metrics
-from timingnet.train import _select_device
+from netsta.baselines import GCNBaseline, GraphSAGEBaseline, MLPBaseline
+from netsta.dataset import NetSTADataset
+from netsta.evaluate import classification_metrics, regression_metrics
+from netsta.train import _select_device
 
 
 def fmt(v, digits=4):
@@ -188,7 +188,7 @@ def main():
     device = _select_device(args.device)
     print(f"Device: {device}")
 
-    dataset = TimingNetDataset(root=args.data_dir, num_circuits=args.num_circuits, seed=args.seed)
+    dataset = NetSTADataset(root=args.data_dir, num_circuits=args.num_circuits, seed=args.seed)
     train_idx, val_idx, test_idx = split_indices(len(dataset), args.seed)
     train_loader, val_loader, test_loader, *_ = build_loaders(
         dataset, train_idx, val_idx, test_idx, args.batch_size

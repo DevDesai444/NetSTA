@@ -19,13 +19,13 @@ import pytest
 
 
 def test_knowledge_base_has_at_least_50_entries():
-    from timingnet.rag.knowledge_base import load_knowledge
+    from netsta.rag.knowledge_base import load_knowledge
     entries = load_knowledge()
     assert len(entries) >= 50
 
 
 def test_knowledge_entries_have_required_fields():
-    from timingnet.rag.knowledge_base import load_knowledge
+    from netsta.rag.knowledge_base import load_knowledge
     required = {
         "circuit_name", "description", "typical_specs", "topology_type",
         "device_count_range", "common_issues", "optimization_tips",
@@ -38,7 +38,7 @@ def test_knowledge_entries_have_required_fields():
 
 
 def test_chunk_text_returns_nonempty_chunks_for_long_text():
-    from timingnet.rag.knowledge_base import chunk_text
+    from netsta.rag.knowledge_base import chunk_text
     text = ("hello world " * 800).strip()
     chunks = chunk_text(text, chunk_size=512, overlap=50)
     assert len(chunks) >= 1
@@ -46,13 +46,13 @@ def test_chunk_text_returns_nonempty_chunks_for_long_text():
 
 
 def test_chunk_text_handles_short_text_in_one_chunk():
-    from timingnet.rag.knowledge_base import chunk_text
+    from netsta.rag.knowledge_base import chunk_text
     chunks = chunk_text("short text", chunk_size=512, overlap=50)
     assert chunks == ["short text"]
 
 
 def test_build_chunks_attaches_metadata():
-    from timingnet.rag.knowledge_base import build_chunks
+    from netsta.rag.knowledge_base import build_chunks
     chunks = build_chunks()
     assert chunks, "expected at least one chunk"
     for c in chunks:
@@ -70,7 +70,7 @@ def knowledge_store_module(tmp_path_factory):
     """Module-scoped: build the store once so the (potentially slow) embedder
     download / Chroma init happens only on the first test."""
     try:
-        from timingnet.rag.embeddings import KnowledgeStore
+        from netsta.rag.embeddings import KnowledgeStore
     except Exception as exc:  # pragma: no cover
         pytest.skip(f"rag.embeddings unavailable: {exc!r}")
     persist = tmp_path_factory.mktemp("kb_chroma")
@@ -98,7 +98,7 @@ def test_add_document_then_retrieve(knowledge_store_module):
 
 
 def test_parser_fallback_extracts_topology_and_specs(knowledge_store_module):
-    from timingnet.rag.circuit_parser import parse_to_spec
+    from netsta.rag.circuit_parser import parse_to_spec
     spec, backend = parse_to_spec(
         "Design a two-stage Miller-compensated op-amp with 60dB gain and 10MHz GBW",
         knowledge_store=knowledge_store_module,
@@ -120,15 +120,15 @@ def test_parser_fallback_extracts_topology_and_specs(knowledge_store_module):
 def test_parser_fallback_topology_keyword_detection(
     knowledge_store_module, query, expected_topology,
 ):
-    from timingnet.rag.circuit_parser import parse_to_spec
+    from netsta.rag.circuit_parser import parse_to_spec
     spec, _ = parse_to_spec(query, knowledge_store=knowledge_store_module)
     assert spec.topology == expected_topology
 
 
 def test_design_advisor_runs_template_fallback(knowledge_store_module):
     """Even with no LLM, the advisor should emit a non-empty recommendation list."""
-    from timingnet.rag.circuit_parser import parse_to_spec
-    from timingnet.rag.design_advisor import advise
+    from netsta.rag.circuit_parser import parse_to_spec
+    from netsta.rag.design_advisor import advise
     query = "Two-stage op-amp with 60dB gain."
     spec, _ = parse_to_spec(query, knowledge_store=knowledge_store_module)
     report = advise(spec, predictions=None, knowledge_store=knowledge_store_module)

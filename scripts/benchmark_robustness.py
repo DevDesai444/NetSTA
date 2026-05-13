@@ -31,9 +31,9 @@ from _bench_utils import (
     write_markdown_table,
 )
 
-from timingnet.dataset import NetSTAAugment, TimingNetDataset
-from timingnet.evaluate import classification_metrics, regression_metrics
-from timingnet.train import _select_device
+from netsta.dataset import NetSTAAugment, NetSTADataset
+from netsta.evaluate import classification_metrics, regression_metrics
+from netsta.train import _select_device
 
 
 def _parse_seeds(arg: str):
@@ -93,7 +93,7 @@ def main():
     device = _select_device(args.device)
     print(f"Device: {device} | seeds: {args.seeds}")
 
-    dataset = TimingNetDataset(root=args.data_dir, num_circuits=args.num_circuits, seed=42)
+    dataset = NetSTADataset(root=args.data_dir, num_circuits=args.num_circuits, seed=42)
     sample = dataset[0]
     node_feature_dim = sample.x.size(1)
     edge_feature_dim = sample.edge_attr.size(1) if sample.edge_attr.dim() > 1 else 1

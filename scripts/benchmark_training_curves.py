@@ -2,7 +2,7 @@
 """
 Train one reference NetSTA model and visualize its convergence.
 
-The existing `timingnet.train.train(...)` already logs full per-epoch history
+The existing `netsta.train.train(...)` already logs full per-epoch history
 into checkpoint_dir/results.json -- we run training, read that history, and
 plot loss curves, per-task loss curves, and the LR schedule.
 """
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from _bench_utils import PLOTS_DIR, RESULTS_DIR, ensure_dirs, save_json
 
-from timingnet.train import train as run_train
+from netsta.train import train as run_train
 
 
 def _matplotlib():

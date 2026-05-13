@@ -69,11 +69,11 @@ Repository = "https://github.com/DevDesai444/NetSTA"
 Issues     = "https://github.com/DevDesai444/NetSTA/issues"
 
 [tool.setuptools.packages.find]
-include = ["netsta*", "timingnet*"]
+include = ["netsta*"]
 exclude = ["tests*", "scripts*"]
 
 [tool.setuptools.package-data]
-"timingnet.rag" = ["*.json"]
+"netsta.rag" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

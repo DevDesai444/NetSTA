@@ -24,9 +24,9 @@ import plotly.graph_objects as go
 import streamlit as st
 import torch
 
-from timingnet.circuit_gen import Circuit, generate_circuit
-from timingnet.congestion import compute_demand_grid
-from timingnet.predict import load_model, predict_circuit
+from netsta.circuit_gen import Circuit, generate_circuit
+from netsta.congestion import compute_demand_grid
+from netsta.predict import load_model, predict_circuit
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +520,7 @@ with st.sidebar:
         ckpt_path = st.selectbox("Checkpoint", ckpts, index=0)
     else:
         ckpt_path = "checkpoints/best_model.pt"
-        st.info("No checkpoints found. Run `python3 -m timingnet.train`.")
+        st.info("No checkpoints found. Run `python3 -m netsta.train`.")
 
     st.divider()
     st.header("Tabs to show")
@@ -544,13 +544,13 @@ def _build_circuit_digital(seed, n_in, n_gates, n_out):
 
 
 def _build_circuit_analog(seed, topology):
-    from timingnet.analog_circuit_gen import generate_analog_circuit
+    from netsta.analog_circuit_gen import generate_analog_circuit
     return generate_analog_circuit(seed=int(seed), topology=topology)
 
 
 def _build_circuit_from_nl(query, seed):
     """Run the RAG pipeline. Returns (circuit, spec, parser_backend)."""
-    from timingnet.rag import KnowledgeStore, parse_to_spec, generate_from_spec
+    from netsta.rag import KnowledgeStore, parse_to_spec, generate_from_spec
     store = KnowledgeStore()
     spec, backend = parse_to_spec(query, knowledge_store=store)
     circuit = generate_from_spec(spec, seed=int(seed))
@@ -619,10 +619,10 @@ elif model is None:
 sta_results = predictions["sta_results"] if predictions else None
 if sta_results is None:
     if getattr(circuit, "is_analog", False):
-        from timingnet.analog_sta import run_analog_sta
+        from netsta.analog_sta import run_analog_sta
         sta_results = run_analog_sta(circuit)
     else:
-        from timingnet.sta import run_sta as _run_sta
+        from netsta.sta import run_sta as _run_sta
         sta_results = _run_sta(circuit)
 
 
@@ -860,10 +860,10 @@ if "Circuit Search" in tabs:
         if model is None:
             st.warning("Load a checkpoint to run similarity search.")
         else:
-            from timingnet.similarity.circuit_index import CircuitIndex, embed_circuit
-            from timingnet.similarity.search import find_by_property, find_similar
-            from timingnet.dataset import (
-                AnalogCircuitDataset, MixedCircuitDataset, TimingNetDataset,
+            from netsta.similarity.circuit_index import CircuitIndex, embed_circuit
+            from netsta.similarity.search import find_by_property, find_similar
+            from netsta.dataset import (
+                AnalogCircuitDataset, MixedCircuitDataset, NetSTADataset,
             )
 
             top_l, top_r = st.columns([1, 2])
@@ -884,7 +884,7 @@ if "Circuit Search" in tabs:
             @st.cache_resource
             def _get_index(circuit_type, n, ckpt):
                 if circuit_type == "digital":
-                    ds = TimingNetDataset(root="data", num_circuits=n, seed=42)
+                    ds = NetSTADataset(root="data", num_circuits=n, seed=42)
                 elif circuit_type == "analog":
                     ds = AnalogCircuitDataset(root="data_analog", num_circuits=n, seed=42)
                 else:
@@ -1078,7 +1078,7 @@ if "Design Advisor" in tabs:
                 "below (best-effort spec from circuit metadata)."
             )
             if st.button("Run advisor on current circuit (no NL spec)"):
-                from timingnet.rag import KnowledgeStore, advise, CircuitSpec
+                from netsta.rag import KnowledgeStore, advise, CircuitSpec
                 spec = CircuitSpec(
                     topology=("two_stage_opamp" if getattr(circuit, "is_analog", False)
                               else "digital_netlist"),
@@ -1092,7 +1092,7 @@ if "Design Advisor" in tabs:
                     report = advise(spec, predictions, knowledge_store=KnowledgeStore())
                 st.session_state["last_report"] = report
         else:
-            from timingnet.rag import KnowledgeStore, advise
+            from netsta.rag import KnowledgeStore, advise
             if st.button("Re-run advisor"):
                 with st.spinner("Running advisor..."):
                     report = advise(spec_from_nl, predictions, knowledge_store=KnowledgeStore())
@@ -1198,7 +1198,7 @@ if "Model Info" in tabs:
             st.dataframe(mrows, use_container_width=True, height=200)
         else:
             st.caption("`results/verification/metrics.json` not found — "
-                       "run `python3 -m timingnet.evaluate`.")
+                       "run `python3 -m netsta.evaluate`.")
 
         st.markdown("##### Saved confusion / ROC plots")
         plots = sorted(glob.glob("results/**/*.png", recursive=True))

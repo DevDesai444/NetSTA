@@ -38,13 +38,13 @@ from _bench_utils import (
     write_markdown_table,
 )
 
-from timingnet.circuit_gen import generate_circuit
-from timingnet.dataset import NetSTAAugment
-from timingnet.evaluate import classification_metrics, regression_metrics
-from timingnet.graph_builder import circuit_to_pyg
-from timingnet.nangate45 import NANGATE45_CELLS
-from timingnet.sta import run_sta
-from timingnet.train import _select_device
+from netsta.circuit_gen import generate_circuit
+from netsta.dataset import NetSTAAugment
+from netsta.evaluate import classification_metrics, regression_metrics
+from netsta.graph_builder import circuit_to_pyg
+from netsta.nangate45 import NANGATE45_CELLS
+from netsta.sta import run_sta
+from netsta.train import _select_device
 
 
 SIMPLE_GATE_FUNCS = {"AND", "OR", "NOT"}

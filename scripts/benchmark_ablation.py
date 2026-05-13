@@ -32,9 +32,9 @@ from _bench_utils import (
     write_markdown_table,
 )
 
-from timingnet.dataset import NetSTAAugment, TimingNetDataset
-from timingnet.evaluate import classification_metrics, regression_metrics
-from timingnet.train import _select_device
+from netsta.dataset import NetSTAAugment, NetSTADataset
+from netsta.evaluate import classification_metrics, regression_metrics
+from netsta.train import _select_device
 
 
 # Last 4 cols of node features are (depth, load_cap, fanout, fanin). The
@@ -97,7 +97,7 @@ def run_ablation(name, ablation, dataset, node_feature_dim, edge_feature_dim,
     train_transform = _ChainTransform(base_transform, NetSTAAugment())
     eval_transform = base_transform  # mask edges/features on val+test too
 
-    from timingnet.dataset import TransformSubset
+    from netsta.dataset import TransformSubset
     from torch_geometric.loader import DataLoader as PygLoader
     train_ds = TransformSubset(dataset, train_idx, transform=train_transform)
     val_ds = TransformSubset(dataset, val_idx, transform=eval_transform)
@@ -186,7 +186,7 @@ def main():
     ensure_dirs()
     device = _select_device(args.device)
     print(f"Device: {device}")
-    dataset = TimingNetDataset(root=args.data_dir, num_circuits=args.num_circuits, seed=args.seed)
+    dataset = NetSTADataset(root=args.data_dir, num_circuits=args.num_circuits, seed=args.seed)
     sample = dataset[0]
     node_feature_dim = sample.x.size(1)
     edge_feature_dim = sample.edge_attr.size(1) if sample.edge_attr.dim() > 1 else 1

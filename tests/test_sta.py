@@ -11,8 +11,8 @@ import math
 
 import pytest
 
-from timingnet.circuit_gen import generate_circuit
-from timingnet.sta import run_sta
+from netsta.circuit_gen import generate_circuit
+from netsta.sta import run_sta
 
 
 def test_run_sta_returns_required_fields(sample_digital_circuit):

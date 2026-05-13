@@ -15,7 +15,7 @@ import json
 import sys
 from textwrap import indent
 
-from timingnet.rag import (
+from netsta.rag import (
     KnowledgeStore,
     advise,
     generate_from_spec,
