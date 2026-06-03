@@ -129,7 +129,7 @@ def _compute_test_metrics(model, loader, device, tasks):
             continue
         pr = np.concatenate(preds[t], axis=0)
         tg = np.concatenate(targs[t], axis=0)
-        if t in ("slack", "congestion"):
+        if t in ("slack", "arrival_time", "required_time", "congestion"):
             out_metrics[t] = regression_metrics(pr, tg)
         elif t in ("critical_path", "drc"):
             m, _ = classification_metrics(pr, tg)
@@ -320,16 +320,28 @@ def train(
     print(f"Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
     print(f"Active tasks: {list(tasks)}")
 
-    # Compute slack mean/std on the train split (raw ns) so SlackHead can
-    # standardize the loss internally while keeping forward outputs in ns.
-    stats = DatasetStats.from_slack_tensors(
-        dataset[i].y_slack for i in train_idx
+    # Compute train-split stats for every active timing regression task
+    # (slack, arrival_time, required_time) so each head can standardize its
+    # own loss while keeping forward outputs in ns.
+    has_at = any(hasattr(dataset[i], "y_arrival_time") for i in train_idx[:1])
+    has_rt = any(hasattr(dataset[i], "y_required_time") for i in train_idx[:1])
+    at_iter = (dataset[i].y_arrival_time for i in train_idx) if has_at else None
+    rt_iter = (dataset[i].y_required_time for i in train_idx) if has_rt else None
+    stats = DatasetStats.from_target_tensors(
+        (dataset[i].y_slack for i in train_idx),
+        arrival_tensors=at_iter,
+        required_tensors=rt_iter,
     )
     stats_path = os.path.join(checkpoint_dir, STATS_FILENAME)
     os.makedirs(checkpoint_dir, exist_ok=True)
     stats.save(stats_path)
-    print(f"Slack stats (train split): mean={stats.slack_mean:.4f} ns, "
-          f"std={stats.slack_std:.4f} ns -> {stats_path}")
+    print(
+        f"Train-split stats (ns):  "
+        f"slack mean={stats.slack_mean:.4f}/std={stats.slack_std:.4f}  "
+        f"AT mean={stats.arrival_time_mean:.4f}/std={stats.arrival_time_std:.4f}  "
+        f"RT mean={stats.required_time_mean:.4f}/std={stats.required_time_std:.4f}  "
+        f"-> {stats_path}"
+    )
 
     use_symmetry = circuit_type in ("analog", "mixed")
     config = NetSTAConfig(
@@ -345,6 +357,10 @@ def train(
         use_symmetry_attention=use_symmetry,
         slack_mean=stats.slack_mean,
         slack_std=stats.slack_std,
+        arrival_time_mean=stats.arrival_time_mean,
+        arrival_time_std=stats.arrival_time_std,
+        required_time_mean=stats.required_time_mean,
+        required_time_std=stats.required_time_std,
     )
     model = NetSTAModel(config).to(dev)
 

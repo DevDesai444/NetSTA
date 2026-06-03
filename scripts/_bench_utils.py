@@ -200,12 +200,16 @@ def make_netsta(
     num_heads: int = 4,
     dropout: float = 0.1,
     lr: float = 1e-3,
-    tasks: Sequence[str] = ("slack", "critical_path"),
+    tasks: Sequence[str] = ("slack", "arrival_time", "required_time"),
     task_weights=None,
     use_residual: bool = True,
     use_attention: bool = True,
     slack_mean: float = 0.0,
     slack_std: float = 1.0,
+    arrival_time_mean: float = 0.0,
+    arrival_time_std: float = 1.0,
+    required_time_mean: float = 0.0,
+    required_time_std: float = 1.0,
 ) -> NetSTAModel:
     config = NetSTAConfig(
         node_feature_dim=node_feature_dim,
@@ -221,6 +225,10 @@ def make_netsta(
         use_attention=use_attention,
         slack_mean=slack_mean,
         slack_std=slack_std,
+        arrival_time_mean=arrival_time_mean,
+        arrival_time_std=arrival_time_std,
+        required_time_mean=required_time_mean,
+        required_time_std=required_time_std,
     )
     return NetSTAModel(config)
 
@@ -237,3 +245,19 @@ def compute_slack_stats(dataset, train_idx):
         dataset[i].y_slack for i in train_idx
     )
     return stats.slack_mean, stats.slack_std
+
+
+def compute_target_stats(dataset, train_idx):
+    """Mean/std of y_slack, y_arrival_time, y_required_time across the train
+    subset (ns). Used by every benchmark script so comparisons share the same
+    standardization. Returns a DatasetStats dataclass.
+    """
+    from netsta.stats import DatasetStats
+    sample = dataset[train_idx[0]] if len(train_idx) else None
+    has_at = sample is not None and hasattr(sample, "y_arrival_time")
+    has_rt = sample is not None and hasattr(sample, "y_required_time")
+    return DatasetStats.from_target_tensors(
+        (dataset[i].y_slack for i in train_idx),
+        arrival_tensors=(dataset[i].y_arrival_time for i in train_idx) if has_at else None,
+        required_tensors=(dataset[i].y_required_time for i in train_idx) if has_rt else None,
+    )

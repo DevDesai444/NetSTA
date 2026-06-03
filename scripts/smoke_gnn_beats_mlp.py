@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from _bench_utils import (  # noqa: E402
     collect_test_predictions,
-    compute_slack_stats,
+    compute_target_stats,
     fit_torch_model,
     make_netsta,
     split_indices,
@@ -62,8 +62,9 @@ def run_one(label, model, train_loader, val_loader, test_loader, device,
         "best_epoch": best_epoch,
         "best_val_loss": best_val_loss,
     }
-    if "slack" in preds:
-        out["slack"] = regression_metrics(preds["slack"], targets["slack"])
+    for task in ("slack", "arrival_time", "required_time"):
+        if task in preds:
+            out[task] = regression_metrics(preds[task], targets[task])
     if "critical_path" in preds:
         m, _ = classification_metrics(preds["critical_path"], targets["critical_path"])
         out["critical_path"] = m
@@ -96,9 +97,11 @@ def main():
     sample = dataset[0]
     node_dim = sample.x.size(1)
     edge_dim = sample.edge_attr.size(1)
-    slack_mean, slack_std = compute_slack_stats(dataset, train_idx)
+    stats = compute_target_stats(dataset, train_idx)
     print(f"node_feat_dim={node_dim}  edge_feat_dim={edge_dim}  "
-          f"slack mean={slack_mean:.4f}ns  std={slack_std:.4f}ns")
+          f"slack mean={stats.slack_mean:.4f}ns std={stats.slack_std:.4f}ns | "
+          f"AT mean={stats.arrival_time_mean:.4f}/std={stats.arrival_time_std:.4f} "
+          f"RT mean={stats.required_time_mean:.4f}/std={stats.required_time_std:.4f}")
 
     augment = NetSTAAugment()
     train_ds = TransformSubset(dataset, train_idx, transform=augment)
@@ -112,16 +115,26 @@ def main():
         node_dim, edge_dim,
         hidden_dim=args.hidden,
         num_layers=args.num_layers,
-        slack_mean=slack_mean, slack_std=slack_std,
+        slack_mean=stats.slack_mean, slack_std=stats.slack_std,
+        arrival_time_mean=stats.arrival_time_mean,
+        arrival_time_std=stats.arrival_time_std,
+        required_time_mean=stats.required_time_mean,
+        required_time_std=stats.required_time_std,
     ).to(device)
     mlp = MLPBaseline(
         node_dim, hidden=args.hidden * 2,
-        slack_mean=slack_mean, slack_std=slack_std,
+        slack_mean=stats.slack_mean, slack_std=stats.slack_std,
     ).to(device)
 
     results = {
         "config": vars(args),
-        "slack_stats": {"mean": slack_mean, "std": slack_std},
+        "slack_stats": {"mean": stats.slack_mean, "std": stats.slack_std},
+        "arrival_time_stats": {
+            "mean": stats.arrival_time_mean, "std": stats.arrival_time_std,
+        },
+        "required_time_stats": {
+            "mean": stats.required_time_mean, "std": stats.required_time_std,
+        },
         "node_feature_dim": node_dim,
         "edge_feature_dim": edge_dim,
     }
@@ -141,17 +154,38 @@ def main():
     gnn_cp = results["NetSTA"].get("critical_path", {})
     mlp_cp = results["MLP"].get("critical_path", {})
 
+    at_r2 = results["NetSTA"].get("arrival_time", {}).get("r2", float("nan"))
+    rt_r2 = results["NetSTA"].get("required_time", {}).get("r2", float("nan"))
+
     print("\n=== Summary ===")
     print(f"  NetSTA  slack R^2 = {gnn_r2:.4f}   MSE (ns^2) = {gnn_mse:.6f}")
     print(f"  MLP     slack R^2 = {mlp_r2:.4f}   MSE (ns^2) = {mlp_mse:.6f}")
+    if "arrival_time" in results["NetSTA"]:
+        print(f"  NetSTA  AT R^2    = {at_r2:.4f}   RT R^2 = {rt_r2:.4f}")
     if gnn_cp and mlp_cp:
         print(f"  NetSTA  CP F1 = {gnn_cp['f1']:.4f}   AUC = {gnn_cp['auc_roc']:.4f}")
         print(f"  MLP     CP F1 = {mlp_cp['f1']:.4f}   AUC = {mlp_cp['auc_roc']:.4f}")
 
-    passed = gnn_r2 > mlp_r2 - 0.02
-    results["pass_criterion"] = "gnn_r2 > mlp_r2 - 0.02"
+    slack_passes = gnn_r2 > mlp_r2 - 0.02
+    # Auxiliary supervision sanity check: AT and RT predictions must beat the
+    # mean baseline (R^2 > 0). If they don't, the backbone halves aren't
+    # learning their intended quantities and the compositional slack head is
+    # built on a faulty foundation.
+    aux_passes = (
+        (not (at_r2 == at_r2) or at_r2 > 0.0)  # tolerate NaN if AT not active
+        and (not (rt_r2 == rt_r2) or rt_r2 > 0.0)
+    )
+    passed = slack_passes and aux_passes
+    results["pass_criterion"] = (
+        "gnn_r2 > mlp_r2 - 0.02 AND (AT_r2 > 0 if active) AND (RT_r2 > 0 if active)"
+    )
     results["passed"] = bool(passed)
-    print("\n  PASS" if passed else "\n  FAIL — GNN did not beat MLP on slack R^2")
+    if passed:
+        print("\n  PASS")
+    elif not slack_passes:
+        print("\n  FAIL — NetSTA did not beat MLP on slack R^2")
+    else:
+        print("\n  FAIL — auxiliary AT/RT predictions are below the mean baseline")
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w") as f:

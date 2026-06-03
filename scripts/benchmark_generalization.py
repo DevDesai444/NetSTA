@@ -160,14 +160,25 @@ def run_test(
     train_metric_loader = DataLoader(actual_train, batch_size=batch_size)
 
     # Standardize on the train side only — testing on a distribution-shifted
-    # split would otherwise leak its own scale into the model.
+    # split would otherwise leak its own scale into the model. Compute stats
+    # for slack, AT, and RT in one pass over the in-memory train Data objects.
     from netsta.stats import DatasetStats
-    slack_stats = DatasetStats.from_slack_tensors(d.y_slack for d in actual_train)
+    has_at = hasattr(actual_train[0], "y_arrival_time") if actual_train else False
+    has_rt = hasattr(actual_train[0], "y_required_time") if actual_train else False
+    stats = DatasetStats.from_target_tensors(
+        (d.y_slack for d in actual_train),
+        arrival_tensors=(d.y_arrival_time for d in actual_train) if has_at else None,
+        required_tensors=(d.y_required_time for d in actual_train) if has_rt else None,
+    )
 
     torch.manual_seed(seed)
     model = make_netsta(
         node_feature_dim, edge_feature_dim,
-        slack_mean=slack_stats.slack_mean, slack_std=slack_stats.slack_std,
+        slack_mean=stats.slack_mean, slack_std=stats.slack_std,
+        arrival_time_mean=stats.arrival_time_mean,
+        arrival_time_std=stats.arrival_time_std,
+        required_time_mean=stats.required_time_mean,
+        required_time_std=stats.required_time_std,
     ).to(device)
     best_state, *_ = fit_torch_model(
         model, train_loader, val_loader, device,

@@ -26,6 +26,7 @@ from _bench_utils import (
     build_loaders,
     collect_test_predictions,
     compute_slack_stats,
+    compute_target_stats,
     ensure_dirs,
     fit_torch_model,
     make_netsta,
@@ -214,11 +215,17 @@ def main():
     print(f"Node features: {node_feature_dim}, Edge features: {edge_feature_dim}")
     print(f"Train/Val/Test: {len(train_idx)}/{len(val_idx)}/{len(test_idx)}")
 
-    # Compute slack stats once from the train split; pass to every torch model
-    # so the loss is computed on the same z-scale. Sklearn baselines regress
-    # against raw ns and don't need standardization.
-    slack_mean, slack_std = compute_slack_stats(dataset, train_idx)
-    print(f"Slack train-set stats: mean={slack_mean:.4f} ns, std={slack_std:.4f} ns")
+    # Compute target stats once from the train split; pass to every torch
+    # model so the loss is computed on the same z-scale. Sklearn baselines
+    # regress against raw ns and don't need standardization. Baselines only
+    # train against slack — the AT/RT supervision is part of NetSTA's design.
+    stats = compute_target_stats(dataset, train_idx)
+    print(
+        f"Train-split stats (ns):  "
+        f"slack mean={stats.slack_mean:.4f}/std={stats.slack_std:.4f}  "
+        f"AT mean={stats.arrival_time_mean:.4f}/std={stats.arrival_time_std:.4f}  "
+        f"RT mean={stats.required_time_mean:.4f}/std={stats.required_time_std:.4f}"
+    )
 
     results = {}
 
@@ -226,16 +233,20 @@ def main():
     torch_specs = [
         ("MLP", "mlp",
          lambda: MLPBaseline(node_feature_dim, hidden=128,
-                             slack_mean=slack_mean, slack_std=slack_std)),
+                             slack_mean=stats.slack_mean, slack_std=stats.slack_std)),
         ("GCN", "gcn",
          lambda: GCNBaseline(node_feature_dim, hidden=256, num_layers=4,
-                             slack_mean=slack_mean, slack_std=slack_std)),
+                             slack_mean=stats.slack_mean, slack_std=stats.slack_std)),
         ("GraphSAGE", "graphsage",
          lambda: GraphSAGEBaseline(node_feature_dim, hidden=256, num_layers=4,
-                                   slack_mean=slack_mean, slack_std=slack_std)),
+                                   slack_mean=stats.slack_mean, slack_std=stats.slack_std)),
         ("NetSTA", "netsta",
          lambda: make_netsta(node_feature_dim, edge_feature_dim,
-                             slack_mean=slack_mean, slack_std=slack_std)),
+                             slack_mean=stats.slack_mean, slack_std=stats.slack_std,
+                             arrival_time_mean=stats.arrival_time_mean,
+                             arrival_time_std=stats.arrival_time_std,
+                             required_time_mean=stats.required_time_mean,
+                             required_time_std=stats.required_time_std)),
     ]
     for label, key, factory in torch_specs:
         if key in skip:

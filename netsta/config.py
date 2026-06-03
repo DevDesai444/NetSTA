@@ -9,14 +9,21 @@ from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
 
-# Defaults below match the original NetSTA setup so the existing
-# training pipeline reproduces prior results when no overrides are passed.
+# Default training targets all three timing quantities the directional
+# backbone is structured around. Auxiliary AT/RT supervision anchors the
+# backbone halves to the physical quantities they represent; the slack head
+# then derives slack compositionally as RT_pred - AT_pred. critical_path is
+# available on demand via --tasks but is no longer in the default set —
+# ablation shows the BCE gradient interferes with slack regression.
 DEFAULT_TASK_WEIGHTS: Dict[str, float] = {
-    "slack": 0.5,
-    "critical_path": 0.5,
+    "slack": 1.0,
+    "arrival_time": 0.3,
+    "required_time": 0.3,
 }
 
-DEFAULT_ACTIVE_TASKS: Tuple[str, ...] = ("slack", "critical_path")
+DEFAULT_ACTIVE_TASKS: Tuple[str, ...] = (
+    "slack", "arrival_time", "required_time",
+)
 
 
 @dataclass

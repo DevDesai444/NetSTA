@@ -28,7 +28,10 @@ def test_config_defaults_match_documented_values():
     assert cfg.num_heads == 4
     assert cfg.dropout == 0.1
     assert cfg.edge_feature_dim == 3 or cfg.edge_feature_dim == 5  # tolerate later bumps
-    assert cfg.active_tasks == ("slack", "critical_path")
+    # Default training supervises slack alongside arrival_time and
+    # required_time so the directional backbone halves get direct AT/RT
+    # gradient instead of only the indirect signal from slack = RT - AT.
+    assert cfg.active_tasks == ("slack", "arrival_time", "required_time")
 
 
 def test_config_validate_rejects_zero_node_dim():

@@ -26,7 +26,7 @@ from _bench_utils import (
     RESULTS_DIR,
     build_loaders,
     collect_test_predictions,
-    compute_slack_stats,
+    compute_target_stats,
     ensure_dirs,
     fit_torch_model,
     make_netsta,
@@ -73,10 +73,10 @@ def train_on_subset(dataset, n_train_circuits, total_seed_circuits,
         dataset, train_idx, val_idx, test_idx, batch_size,
         train_transform=NetSTAAugment(),
     )
-    slack_mean, slack_std = compute_slack_stats(dataset, train_idx)
+    stats = compute_target_stats(dataset, train_idx)
     model = make_netsta(
         node_feature_dim, edge_feature_dim,
-        slack_mean=slack_mean, slack_std=slack_std,
+        slack_mean=stats.slack_mean, slack_std=stats.slack_std, arrival_time_mean=stats.arrival_time_mean, arrival_time_std=stats.arrival_time_std, required_time_mean=stats.required_time_mean, required_time_std=stats.required_time_std,
     ).to(device)
     best_state, _, _, _ = fit_torch_model(
         model, train_loader, val_loader, device,
@@ -180,10 +180,10 @@ def main():
         dataset, train_idx, val_idx, test_idx, args.batch_size,
         train_transform=NetSTAAugment(),
     )
-    slack_mean, slack_std = compute_slack_stats(dataset, train_idx)
+    stats = compute_target_stats(dataset, train_idx)
     timing_model = make_netsta(
         node_feature_dim, edge_feature_dim,
-        slack_mean=slack_mean, slack_std=slack_std,
+        slack_mean=stats.slack_mean, slack_std=stats.slack_std, arrival_time_mean=stats.arrival_time_mean, arrival_time_std=stats.arrival_time_std, required_time_mean=stats.required_time_mean, required_time_std=stats.required_time_std,
     ).to(device)
     print("Training timing reference model...")
     best_state, *_ = fit_torch_model(
