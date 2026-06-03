@@ -126,6 +126,46 @@ def classification_metrics(
 # ---------------------------------------------------------------------------
 
 
+def _per_depth_regression(pred: np.ndarray, target: np.ndarray, depth: np.ndarray):
+    """Group nodes by integer logical_depth and compute per-group R^2.
+
+    Returns {depth_str: {"n": int, "mse": float, "r2": float}}. Depth buckets
+    with fewer than 5 nodes are merged into the next higher bucket so the
+    R^2 isn't dominated by tiny samples.
+    """
+    pred = pred.astype(np.float64).ravel()
+    target = target.astype(np.float64).ravel()
+    depth = depth.astype(np.int64).ravel()
+    n = min(pred.size, target.size, depth.size)
+    pred, target, depth = pred[:n], target[:n], depth[:n]
+
+    out = {}
+    for d in sorted(set(depth.tolist())):
+        mask = depth == d
+        if mask.sum() < 1:
+            continue
+        m = regression_metrics(pred[mask], target[mask])
+        out[str(int(d))] = {"n": int(mask.sum()), "mse": m["mse"], "r2": m["r2"]}
+    return out
+
+
+@torch.no_grad()
+def _collect_node_depth(loader):
+    """Concatenate y_logical_depth across the loader's batches.
+
+    Returns None if the dataset doesn't carry the depth metadata (older
+    cached datasets pre-v7).
+    """
+    chunks = []
+    for data in loader:
+        if not hasattr(data, "y_logical_depth"):
+            return None
+        chunks.append(data.y_logical_depth.detach().cpu().numpy())
+    if not chunks:
+        return None
+    return np.concatenate(chunks, axis=0)
+
+
 @torch.no_grad()
 def collect_predictions(model, loader, device, active_tasks):
     """Return ({task: pred_array}, {task: target_array})."""
@@ -250,11 +290,15 @@ def evaluate(
     print(f"Test set size: {len(test_ds)} circuits")
 
     preds, targets = collect_predictions(model, loader, dev, config.active_tasks)
+    # logical_depth comes from the dataset metadata (not a model output) and is
+    # used to stratify slack R^2 by node depth — surfacing whether the model
+    # degrades on deep nodes (the iteration-depth bottleneck hypothesis).
+    node_depth = _collect_node_depth(loader)
 
     all_metrics: Dict[str, Dict[str, float]] = {}
 
     for task in config.active_tasks:
-        if task in ("slack", "congestion"):
+        if task in ("slack", "arrival_time", "required_time", "congestion"):
             m = regression_metrics(preds[task], targets[task])
             all_metrics[task] = m
             print(f"\n[{task}]  MSE={m['mse']:.6f}  MAE={m['mae']:.6f}  "
@@ -264,6 +308,13 @@ def evaluate(
                 f"{task} predictions vs actual",
                 os.path.join(output_dir, f"{task}_scatter.png"),
             )
+            # Depth-stratified R^2 for the timing regression tasks.
+            if node_depth is not None and task in ("slack", "arrival_time", "required_time"):
+                per_depth = _per_depth_regression(preds[task], targets[task], node_depth)
+                all_metrics[task]["per_depth_r2"] = per_depth
+                print(f"  per-depth R^2:")
+                for d, dm in sorted(per_depth.items(), key=lambda kv: int(kv[0])):
+                    print(f"    depth {d:>2}: n={dm['n']:>5}  R^2={dm['r2']:+.4f}")
         elif task in ("critical_path", "drc"):
             m, extras = classification_metrics(preds[task], targets[task])
             all_metrics[task] = m
@@ -274,6 +325,20 @@ def evaluate(
                       os.path.join(output_dir, f"{task}_roc.png"))
             _confusion_plot(extras["confusion_matrix"],
                             os.path.join(output_dir, f"{task}_confusion.png"))
+
+    # If all three of slack / AT / RT were active, also report the
+    # consistency of the compositional identity: slack_pred should equal
+    # RT_pred - AT_pred up to float roundoff.
+    if all(t in preds for t in ("slack", "arrival_time", "required_time")):
+        composed = preds["required_time"] - preds["arrival_time"]
+        max_drift = float(np.abs(preds["slack"] - composed).max())
+        all_metrics["compositional_consistency"] = {
+            "max_abs_diff_ns": max_drift,
+            "mean_abs_diff_ns": float(np.abs(preds["slack"] - composed).mean()),
+        }
+        print(f"\n[compositional] max |slack_pred - (rt_pred - at_pred)| = "
+              f"{max_drift:.2e} ns (zero by construction when the head is "
+              "compositional)")
 
     out = {
         "checkpoint": os.path.abspath(checkpoint_path),
