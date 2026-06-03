@@ -39,7 +39,15 @@ class NetSTAConfig:
 
     # Backbone
     hidden_dim: int = 64
-    num_layers: int = 4
+    # For the timing backbone, num_layers controls the number of relaxation
+    # iterations of each directed sweep (shared weights across iterations).
+    # 6 covers the typical depth distribution (mean ~9 on the standard mixed
+    # circuit pool — soft aggregation propagates signal further than the
+    # iteration count in practice). Bumping further produced diminishing
+    # returns in the ablation under the post-MLP design; with the additive
+    # rewrite each iteration composes meaningfully so 6 strikes the balance
+    # between coverage and overfitting risk on the train pool.
+    num_layers: int = 6
     num_heads: int = 4
     dropout: float = 0.1
 

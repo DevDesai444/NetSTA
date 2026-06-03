@@ -24,7 +24,7 @@ from netsta.model import (
 def test_config_defaults_match_documented_values():
     cfg = NetSTAConfig(node_feature_dim=24)
     assert cfg.hidden_dim == 64
-    assert cfg.num_layers == 4
+    assert cfg.num_layers == 6
     assert cfg.num_heads == 4
     assert cfg.dropout == 0.1
     assert cfg.edge_feature_dim == 3 or cfg.edge_feature_dim == 5  # tolerate later bumps

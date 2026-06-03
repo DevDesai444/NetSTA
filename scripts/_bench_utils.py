@@ -71,7 +71,12 @@ def fit_torch_model(
     device,
     epochs: int,
     warmup_epochs: int = 5,
-    patience: int = 25,
+    # 40 epochs of patience because the multi-task loss has three regression
+    # heads competing for backbone capacity; their best-val epochs don't all
+    # land at the same time and the joint loss is slower to converge than
+    # single-task training. 25 (the old default) cut several runs off mid
+    # plateau before the slack curve had stopped improving.
+    patience: int = 40,
     weight_decay: float = 1e-4,
     log_prefix: str = "",
 ) -> Tuple[Dict, float, int, List[Dict]]:

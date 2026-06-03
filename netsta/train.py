@@ -249,10 +249,10 @@ def train(
     hidden_channels: int = 64,
     num_layers: int = 4,
     heads: int = 4,
-    tasks=("slack", "critical_path"),
+    tasks=("slack", "arrival_time", "required_time"),
     task_weights=None,
     seed: int = 42,
-    patience: int = 25,
+    patience: int = 40,
     warmup_epochs: int = 5,
     device: str = "auto",
     load_cached: bool = True,
@@ -510,7 +510,7 @@ def main():
         help="Comma-separated active task heads (slack,critical_path,congestion)",
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--patience", type=int, default=25)
+    parser.add_argument("--patience", type=int, default=40)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument(
         "--device", default="auto", choices=["auto", "cuda", "mps", "cpu"]

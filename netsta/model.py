@@ -502,6 +502,14 @@ class SlackHead(_NsRegressionHead):
       structurally and the slack prediction is mechanically consistent with
       the AT and RT predictions. Recommended whenever the auxiliary AT/RT
       heads are active.
+
+    Loss is Huber (smooth-L1) in z-space rather than MSE. Slack has a
+    long-left-tail distribution (nodes with timing violations sit at large
+    negative slack); MSE over-weights those, pulling the regression away
+    from the bulk of well-behaved nodes. Huber stays quadratic for small
+    residuals (so it matches MSE in the normal regime) but is linear past
+    the delta threshold, capping the influence of any single outlier on
+    the gradient.
     """
 
     name = "slack"
@@ -514,6 +522,7 @@ class SlackHead(_NsRegressionHead):
         slack_mean: float = 0.0,
         slack_std: float = 1.0,
         compositional: bool = False,
+        huber_delta: float = 0.5,
     ):
         super().__init__(
             in_dim=in_dim, dropout=dropout,
@@ -526,9 +535,18 @@ class SlackHead(_NsRegressionHead):
         self.register_buffer("slack_mean", self.target_mean)
         self.register_buffer("slack_std", self.target_std)
         self.compositional = bool(compositional)
-        # The compositional path doesn't use self.head at inference; we keep
-        # it allocated for backwards compat with non-compositional checkpoints
-        # and for fallback when the AT/RT heads are not active.
+        # Delta is interpreted in z-space units after dividing both pred and
+        # target by target_std. delta=0.5 means "treat residuals up to 0.5 std
+        # as quadratic, beyond that as linear" — fits ~38% of a unit-normal
+        # distribution and clips the outlier tail aggressively.
+        self.huber_delta = float(huber_delta)
+
+    def loss(self, pred, target):
+        return F.smooth_l1_loss(
+            pred / self.target_std,
+            target / self.target_std,
+            beta=self.huber_delta,
+        )
 
     def attach_components(
         self,
