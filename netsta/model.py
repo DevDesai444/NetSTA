@@ -208,50 +208,91 @@ class _TimingMessageLayer(MessagePassing):
     """One step of timing-style relaxation along a directed edge.
 
     Forward semantics (when called with the original edge_index):
-      AT_new[child] = MAX over input drivers of
+      AT_new[child] = aggr over input drivers of
                       (AT[driver] + delay_proj(edge_attr[driver -> child]))
 
-    The aggregator is element-wise max — directly analogous to the STA forward
-    pass where arrival time at a node is the max over its input drivers of
-    (driver_AT + propagation delay). Each embedding dimension can capture a
-    different facet of timing (e.g. critical path through different cell
-    types), so per-dimension max is a sensible generalization of scalar STA.
+    `aggr_kind="max"` mirrors the STA forward pass (arrival_time at a node is
+    the max over its input drivers of driver_AT + propagation delay).
+    `aggr_kind="min"` mirrors the backward pass (required_time at a node is
+    the min over output sinks of sink_RT - propagation delay). Each embedding
+    dimension can capture a different facet of timing, so per-dimension
+    max/min is the natural generalization of scalar STA.
 
-    For backward (RT) propagation, instantiate a second copy and call with
-    edge_index flipped — and use `aggr_kind="min"`.
+    There is no post-aggregation MLP — message + aggregation IS the entire
+    layer. Keeping the recurrence purely additive (message = x_j +/- delay)
+    means the per-iteration update is structurally analogous to the STA
+    relaxation step, and stacking K iterations composes meaningfully (each
+    iteration extends propagation by one DAG hop without an MLP twist on top
+    that would let the model wander away from the STA semantics).
+
+    During training we aggregate via temperature-controlled LogSumExp instead
+    of hard max — gradient flows through every input driver in proportion to
+    its contribution to the soft maximum, rather than only through the
+    single arg-max input. The temperature controls the softness:
+    `soft_temperature -> infinity` reduces to hard max; finite values let
+    weaker contenders also receive gradient. At eval time we switch to hard
+    max for STA-correct semantics.
     """
 
-    def __init__(self, hidden: int, edge_dim: int, aggr_kind: str = "max"):
+    def __init__(
+        self,
+        hidden: int,
+        edge_dim: int,
+        aggr_kind: str = "max",
+        soft_temperature: float = 8.0,
+    ):
         if aggr_kind not in ("max", "min"):
             raise ValueError(f"aggr_kind must be 'max' or 'min', got {aggr_kind}")
-        # PyG's scatter_max ignores nodes with no incoming edges (returns the
-        # default fill) — we re-combine with `x` outside this layer so source
-        # nodes keep their initial embedding.
+        # Register a hard aggregator with PyG; we override aggregate() so the
+        # registered kind only matters as a label.
         super().__init__(aggr=aggr_kind, node_dim=0)
         self.aggr_kind = aggr_kind
+        self.soft_temperature = float(soft_temperature)
         self.delay_proj = nn.Linear(edge_dim, hidden)
-        # A small mixer applied after aggregation so the layer can shape the
-        # propagated signal (otherwise a pure max-of-(parent + delay) might be
-        # too restrictive a function class).
-        self.mix = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.ELU(),
-            nn.Linear(hidden, hidden),
-        )
+        # Initialize the delay projection at a small scale so the first few
+        # iterations do not overwhelm the input projection's initial AT/RT
+        # estimate. Large initial deltas can otherwise saturate the
+        # accumulation in 1-2 iterations and starve later updates of gradient.
+        nn.init.normal_(self.delay_proj.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.delay_proj.bias)
 
     def forward(self, x, edge_index, edge_attr):
-        agg = self.propagate(edge_index, x=x, edge_attr=edge_attr)
-        return self.mix(agg)
+        if edge_index.numel() == 0:
+            # Disconnected graph: aggregation has no inputs anywhere, so the
+            # caller's combine step will simply keep the existing embedding.
+            return x
+        return self.propagate(edge_index, x=x, edge_attr=edge_attr)
 
     def message(self, x_j, edge_attr):
-        # x_j: source-node embedding (the "driver" under forward propagation,
-        # or the "sink" under backward propagation since we flip edge_index).
-        # edge_attr: matched per-edge features (wire delay, distance, etc.).
+        # x_j is the source-node embedding (driver under forward propagation,
+        # sink under backward propagation since we flip edge_index in the
+        # backbone). Delay is signed so the same layer handles both modes.
         delay = self.delay_proj(edge_attr)
         if self.aggr_kind == "min":
-            # Backward semantics: RT propagates by SUBTRACTING delay.
             return x_j - delay
         return x_j + delay
+
+    def aggregate(self, inputs, index, ptr=None, dim_size=None):
+        """Override PyG's aggregator: hard max/min at eval, soft at train."""
+        from torch_geometric.utils import scatter
+
+        if not self.training:
+            reduce = "max" if self.aggr_kind == "max" else "min"
+            return scatter(inputs, index, dim=0, dim_size=dim_size, reduce=reduce)
+
+        # LogSumExp with temperature beta:
+        #   soft_max(z; beta) = max(z) + (1/beta) * log(sum_i exp(beta * (z_i - max)))
+        # Soft min reuses the soft max on negated inputs:
+        #   soft_min(z; beta) = -soft_max(-z; beta)
+        beta = self.soft_temperature
+        signed = inputs if self.aggr_kind == "max" else -inputs
+        # Per-destination max for numerical stability.
+        max_per_dst = scatter(signed, index, dim=0, dim_size=dim_size, reduce="max")
+        shifted = signed - max_per_dst[index]
+        exp_vals = (shifted * beta).exp()
+        sum_exp = scatter(exp_vals, index, dim=0, dim_size=dim_size, reduce="sum")
+        soft = max_per_dst + (1.0 / beta) * sum_exp.clamp_min(1e-12).log()
+        return soft if self.aggr_kind == "max" else -soft
 
 
 class TimingPropagationBackbone(nn.Module):

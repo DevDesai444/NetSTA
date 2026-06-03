@@ -266,6 +266,59 @@ def test_timing_backbone_forward_returns_concat_at_rt_embeddings(sample_pyg_data
     assert out["_graph_emb"].shape[1] == 4 * cfg.hidden_dim
 
 
+def test_timing_message_layer_uses_hard_max_at_eval():
+    """At eval time the layer should produce the standard scatter-max result,
+    so STA semantics are preserved exactly when not training."""
+    import torch
+    from netsta.model import _TimingMessageLayer
+    layer = _TimingMessageLayer(hidden=4, edge_dim=2, aggr_kind="max").eval()
+    # Construct a 3-node graph where node 0 has two parents (nodes 1 and 2).
+    edge_index = torch.tensor([[1, 2], [0, 0]], dtype=torch.long)
+    x = torch.tensor(
+        [[0.0, 0.0, 0.0, 0.0],
+         [1.0, 2.0, 3.0, 4.0],
+         [2.0, 1.0, 4.0, 3.0]],
+    )
+    edge_attr = torch.zeros(2, 2)
+    out = layer(x, edge_index, edge_attr)
+    # With zero edge_attr the delay projection is approximately zero so the
+    # message at node 0 is approximately the element-wise max of nodes 1 and 2:
+    expected_at_0 = torch.maximum(x[1], x[2])
+    assert torch.allclose(out[0], expected_at_0, atol=1e-3)
+
+
+def test_timing_message_layer_soft_aggregation_routes_gradient_to_all_inputs():
+    """During training, the soft max must route gradient to every input
+    driver, not only the arg-max one. With hard max, ~half of the inputs
+    would receive zero gradient."""
+    import torch
+    from netsta.model import _TimingMessageLayer
+    layer = _TimingMessageLayer(
+        hidden=2, edge_dim=1, aggr_kind="max", soft_temperature=4.0,
+    ).train()
+    edge_index = torch.tensor([[1, 2, 3], [0, 0, 0]], dtype=torch.long)
+    x = torch.tensor(
+        [[0.0, 0.0],
+         [3.0, 0.5],  # winner in dim 0
+         [0.5, 3.0],  # winner in dim 1
+         [1.0, 1.0]],
+        requires_grad=True,
+    )
+    edge_attr = torch.zeros(3, 1)
+    out = layer(x, edge_index, edge_attr)
+    out[0].sum().backward()
+    # The failure mode under HARD max is that non-arg-max inputs get exactly
+    # zero gradient. Under soft max every input contributes, in proportion to
+    # its exp-weighted share of the soft max. So even the weakest input
+    # should have strictly positive gradient.
+    grad_sums = x.grad.abs().sum(dim=1)
+    for i in (1, 2, 3):
+        assert grad_sums[i] > 0, (
+            f"input {i} got zero gradient under soft max — "
+            "soft aggregation didn't engage"
+        )
+
+
 def test_timing_backbone_propagates_along_dag_depth(sample_pyg_data):
     """One iteration of the forward layer should be enough to move signal
     one hop downstream — verify by comparing init embedding to post-forward
