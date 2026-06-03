@@ -68,13 +68,40 @@ STEPS = [
 
 
 def _check_environment():
-    """Print torch / PyG / CUDA versions; fail loudly if no GPU is visible."""
+    """Print torch / PyG / CUDA versions and verify the GPU is usable.
+
+    torch.cuda.is_available() returns True even when the GPU's compute
+    capability is older than anything the installed PyTorch wheel ships
+    kernels for — every subsequent kernel launch then dies with
+    cudaErrorNoKernelImageForDevice. Cross-reference the device's
+    capability against torch.cuda.get_arch_list() up front so the suite
+    fails fast with an actionable message instead of three hours into
+    the run.
+    """
     import torch
     print(f"torch         : {torch.__version__}")
     print(f"cuda available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
-        print(f"cuda device   : {torch.cuda.get_device_name(0)}")
-        print(f"cuda memory   : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        name = torch.cuda.get_device_name(0)
+        cap_tuple = torch.cuda.get_device_capability(0)
+        cap = f"sm_{cap_tuple[0]}{cap_tuple[1]}"
+        mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        arch_list = torch.cuda.get_arch_list()
+        print(f"cuda device   : {name} ({cap}, {mem_gb:.1f} GB)")
+        print(f"torch kernels : {', '.join(arch_list)}")
+        if cap not in arch_list:
+            print(
+                f"\nERROR: {name} is {cap}, but the installed PyTorch "
+                f"({torch.__version__}) only ships kernels for "
+                f"{', '.join(arch_list)}. Every CUDA op will fail with "
+                "cudaErrorNoKernelImageForDevice."
+            )
+            print(
+                "Pick a different Kaggle accelerator (T4 x1 is sm_75 and "
+                "works out of the box) or downgrade torch to a build that "
+                f"includes {cap}."
+            )
+            sys.exit(3)
     try:
         import torch_geometric
         print(f"torch_geometric: {torch_geometric.__version__}")
