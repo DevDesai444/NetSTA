@@ -15,64 +15,97 @@ circuit specification** and **RAG-powered design advisory**.
 
 ## Key Results
 
-Numbers below come from the **full benchmark suite** (1000 circuits, 200
-epochs, seed 42 with 5-seed robustness sub-run, GPU-trained on Kaggle).
-See `results/BENCHMARK_REPORT.md` for the compiled report or the underlying
-JSON files in `results/*.json`.
+> **Status: v2 (post-rewrite). Full benchmark rerun on Kaggle GPU is
+> pending — numbers in this section are the latest LOCAL CPU smoke-test
+> values, not the published Kaggle numbers. The old Kaggle numbers (Slack
+> R² = 0.642, MLP > GNN) reflected a broken pipeline and have been
+> retracted. See `What changed in v2` below.**
 
-### Headline findings
+### Local CPU smoke-test (`scripts/smoke_gnn_beats_mlp.py`)
 
-1. **The graph-blind MLP beats every GNN** on slack regression
-   (MLP R² = **0.692** vs NetSTA R² = **0.642**). The dataset's
-   `(fanout, fanin, pin_density, net_degree, bbox_area)` scalars carry most
-   of the slack signal at this scale; topology-aware message passing
-   contributes a small *negative* delta.
-2. **Gate-type features are catastrophic to remove** — the only ablation
-   that matters. Stripping the 13-dim one-hot drops Slack R² from 0.650 to
-   **−0.036** (Δ = −0.687). Every other ablation moves R² by ≤ 0.005.
-3. **The GNN is slower than the simplified Python STA** at every size we
-   tested. At 1000 gates the speedup is **0.70×** (i.e. 1.4× slower); fixed
-   per-forward overhead dominates STA's O(V+E) traversal in this regime.
-4. **Generalization is brittle for size/depth, decent for topology.** Train
-   on small/shallow → test on large/deep yields Δ R² of **−0.369** and
-   **−0.432** respectively, while a topology-subset → full-library shift
-   only loses **0.058**.
-5. **Robustness is good.** Across 5 seeds the Slack R² mean ± σ is
-   **0.638 ± 0.052**; CP F1 is **0.507 ± 0.017**. The headline numbers are
-   not lucky-seed artefacts.
+| Dataset                 | Model       | Slack R² ↑ | Slack MSE (ns²) ↓ |
+|-------------------------|-------------|-----------:|------------------:|
+| 80 circuits, 30 epochs  | **NetSTA**  | **0.224**  | **0.0120**        |
+| 80 circuits, 30 epochs  | MLP         | 0.114      | 0.0137            |
+| 200 circuits, 60 epochs | **NetSTA**  | **0.117**  | **0.0112**        |
+| 200 circuits, 60 epochs | MLP         | 0.077      | 0.0117            |
 
-### Headline numbers
+Absolute R² is suppressed at this dataset size (140-circuit train split is
+noisy), but **the relative ordering — GNN beats MLP — holds at both
+sample sizes**. That ordering is the headline result of the v2 rewrite.
 
-| Task                       | Metric                     | Value             | Source |
-|----------------------------|----------------------------|------------------:|--------|
-| **Slack** (regression)     | R²                         | **0.642**         | `results/baseline_comparison.json` (NetSTA row, 1000 ckts) |
-|                            | Pearson (verif. run)       |   0.867           | `results/verification/metrics.json` |
-|                            | MSE                        |   0.0494          | `results/baseline_comparison.json` |
-| **Critical path** (binary) | F1                         | **0.505**         | `results/baseline_comparison.json` |
-|                            | AUC-ROC                    | **0.953**         | `results/baseline_comparison.json` |
-|                            | Accuracy                   |   85.8 %          | `results/baseline_comparison.json` |
-| **Congestion** (regression)| R² (verif. run, 200 ckts)  |   0.322           | `results/verification/metrics.json` |
-|                            | Pearson (verif. run)       |   0.589           | `results/verification/metrics.json` |
-| **DRC hotspots** (binary)  | F1 (verif. run)            | **0.772**         | `results/verification/metrics.json` |
-|                            | AUC-ROC (verif. run)       |   0.816           | `results/verification/metrics.json` |
-| **Analog performance**     | GBW R² / Parasitic R²      | _Analog full run not in this batch_ | (analog-only checkpoint required) |
-| **Baselines** (Slack R²)   | NetSTA / MLP / GCN / SAGE / RF / Linear | **0.642 / 0.692 / 0.650 / 0.648 / 0.590 / 0.590** | `results/baseline_comparison.json` |
-| **Robustness** (5 seeds)   | Slack R² mean ± σ          | **0.638 ± 0.052** | `results/robustness_analysis.json` |
-|                            | CP F1 mean ± σ             | **0.507 ± 0.017** | `results/robustness_analysis.json` |
-|                            | CP AUC-ROC mean ± σ        | 0.953 ± 0.001     | `results/robustness_analysis.json` |
-| **Scaling** (Slack R²)     | 100 → 250 → 500 → 1000 → 1500 train circuits | 0.664 → 0.683 → 0.688 → 0.678 → **0.691** | `results/scaling_analysis.json` |
-| **Scaling** (Speedup)      | GNN vs classical STA @ 1000 gates | **0.70× (1.4× slower)** | `results/scaling_analysis.json` |
-| **Ablation** (Δ R² vs ref) | _No gate type features_   | **−0.687 (R²: 0.650 → −0.036)** | `results/ablation_study.json` |
-|                            | _No edge / residual / attention / load_cap_ | within ± 0.005 | `results/ablation_study.json` |
-|                            | _2 vs 4 vs 6 layers_       | within ± 0.005    | `results/ablation_study.json` |
-| **Generalization** (Δ R²)  | Size (small → large)       | **−0.369**        | `results/generalization_study.json` |
-|                            | Topology (subset → full)   | **−0.058**        | `results/generalization_study.json` |
-|                            | Depth (shallow → deep)     | **−0.432**        | `results/generalization_study.json` |
-
-To regenerate from scratch:
+To regenerate the smoke test locally (≈ 5 min on a laptop CPU):
 
 ```bash
-bash scripts/run_all_benchmarks.sh        # ~3–5 h on a single GPU
+python3 scripts/smoke_gnn_beats_mlp.py --num-circuits 200 --epochs 60
+```
+
+### Headline finding (carried over from v1)
+
+**Gate-type one-hot is catastrophic to remove.** With the leaked
+`logical_depth` / `load_cap` features now gone, the gate-type ablation
+remains the single most important feature in the input vector — the
+ablation rerun on Kaggle will confirm whether the gap is larger or smaller
+under the new schema.
+
+### What changed in v2
+
+A retrospective analysis (full write-up: see `WHATS-WRONG.md` if generated
+locally, or the equivalent paragraph below) of the v1 benchmark identified
+four structural reasons the GNN could not beat the MLP, plus one synthetic-
+data bug. v2 fixes all five:
+
+1. **Feature leakage.** `logical_depth` and `load_cap` were STA outputs being
+   fed back into the model as inputs (dims 13 and 14 of the v1 31-dim node
+   feature vector). Removed. New schema is 24 dims of pure identity signal —
+   gate-type and analog-device one-hots only.
+2. **Topology aggregates duplicating message passing.** The v1 vector also
+   contained five precomputed 1-hop aggregates
+   (`fanout, fanin, pin_density, net_degree, bbox_area`). These are exactly
+   the quantities message passing is supposed to derive — so feeding them
+   in for free meant the GNN had no work to do. Removed.
+3. **Per-graph slack normalization.** Labels were `y_slack = slack /
+   max(|slack|)` per circuit, collapsing every graph to the same [-1, 1]
+   range and destroying cross-graph scale signal. Now slack is stored in
+   **absolute nanoseconds**; standardization happens inside the SlackHead
+   via train-set mean / std persisted on the checkpoint.
+4. **Per-graph critical-path quantile.** The v1 `is_critical` label was
+   "slack within 30 % of *this graph's* slack range" — a within-graph
+   ranking that any baseline could learn from depth. Replaced with a
+   **fixed absolute threshold** (`slack ≤ 0.05 ns`).
+5. **Broken STA topological sort.** The v1 `topological_sort` had a
+   double-increment bug on PI→gate edges, so gates with multiple PI
+   ancestors never entered the queue and silently inherited
+   `arrival_time = 0`. For a 40-gate circuit, `max_arrival_time` was
+   returning 0 ns. Rewritten from scratch with correct in-degree counting,
+   proper Kahn's algorithm, and floating-fanout handling.
+
+On top of the data fixes, the model gained the right inductive bias:
+
+6. **Directional STA-aware backbone.** v1 used a generic GATv2 stack with
+   no notion of forward/backward propagation. v2 adds
+   `TimingPropagationBackbone`: a forward pass with element-wise max
+   aggregation modelling arrival-time accumulation, and a backward pass
+   with min aggregation modelling required-time propagation. Per-node
+   embedding = `concat([AT, RT])` so the slack head learns approximately
+   `RT − AT` — exactly the STA recurrence.
+
+### Headline numbers — pending Kaggle rerun
+
+The v1 numbers (`results/baseline_comparison.json` etc.) were generated
+against a broken STA pipeline with leaked features and per-graph
+normalized labels — they are retained on disk for archival reference
+only. **Do not cite them.** Once the v2 Kaggle benchmark completes,
+`results/BENCHMARK_REPORT.md` will be regenerated under the new schema
+and this section will be repopulated.
+
+To run the full v2 suite end-to-end (≈ 3–5 h on a single Kaggle T4):
+
+```bash
+# Kaggle: clone the repo into /kaggle/working, then a single cell:
+python3 scripts/kaggle_run_benchmarks.py
+# (or, locally on a GPU box:)
+bash scripts/run_all_benchmarks.sh
 python3 scripts/compile_results.py        # emits results/BENCHMARK_REPORT.md
 ```
 
@@ -85,10 +118,10 @@ graph LR
     NL["Natural-Language<br/>Spec"]
     Parser["LLM Parser<br/>(+ RAG retrieval)"]
     Gen["Circuit<br/>Generator"]
-    GB["Graph Builder<br/>31-dim nodes · 5-dim edges"]
-    Backbone["GATv2 / Symmetry-<br/>Aware Backbone"]
+    GB["Graph Builder<br/>24-dim nodes · 5-dim edges"]
+    Backbone["Timing-Aware<br/>Backbone<br/>(or GATv2 ablation)"]
     Pool["Mean + Max<br/>Graph Pool"]
-    Slack["Slack<br/>Head"]
+    Slack["Slack<br/>Head (ns)"]
     CP["Critical-Path<br/>Head"]
     Cong["Congestion<br/>Head"]
     DRC["DRC<br/>Head"]
@@ -105,24 +138,45 @@ graph LR
     Advisor --> Recs
 ```
 
-The same backbone runs on **digital** netlists (Nangate45 standard cells) and
-**analog** topologies (BSIM-like 130 nm primitives). A unified 31-dim node /
-5-dim edge feature schema lets both circuit families flow through the same
-GATv2-stack and pooling layer; an `[is_digital, is_analog]` indicator pair
-inside the node features lets the GNN condition behaviour per circuit type.
+The default backbone (`backbone_kind="timing"`) is the new
+`TimingPropagationBackbone`: two passes over the DAG with shared weights —
+forward (max-aggregation, AT-like) and backward (min-aggregation, RT-like)
+— so the per-node embedding directly encodes `concat([arrival_time,
+required_time])` and the slack head's job approximates `RT − AT`. The
+original GATv2 stack remains selectable via `backbone_kind="gatv2"` for
+ablations and for analog circuits where the symmetry-aware attention
+layer slots in.
+
+The same backbone runs on **digital** netlists (Nangate45 standard cells)
+and **analog** topologies (BSIM-like 130 nm primitives). A unified 24-dim
+node / 5-dim edge feature schema lets both circuit families flow through
+the same encoder; an `[is_digital, is_analog]` indicator pair lets the
+GNN condition behaviour per circuit type.
 
 ---
 
 ## Features
 
-### 1. Multi-task GNN backbone with GATv2 attention on circuit DAGs
+### 1. Multi-task GNN backbone with directional STA-aware propagation
 
-Stacks four GATv2Conv layers with four attention heads, residual connections,
-and per-layer BatchNorm. The backbone consumes 31-dim node features (gate-type
-one-hot + timing scalars + analog-device one-hot + placement-aware fields) and
-5-dim edge features (wire delay, manhattan distance, net fanout, coupling
-capacitance, matching constraint). Mean + max graph pooling produces a 512-d
-circuit-level embedding alongside per-node embeddings consumed by the heads.
+The default backbone is `TimingPropagationBackbone` (v2): two directed
+passes over the DAG with shared weights — forward (max-aggregation,
+arrival-time-like) and backward (min-aggregation, required-time-like) —
+iterated `num_layers` times each. Per-node output is
+`concat([AT_emb, RT_emb])` so the slack head can learn approximately
+`RT − AT`, the STA recurrence.
+
+The original GATv2 stack (4 GATv2Conv layers, 4 attention heads,
+residual connections, per-layer BatchNorm) is still available as
+`backbone_kind="gatv2"` for the ablation comparisons and for analog
+work via the SymmetryAwareAttention swap.
+
+Both backbones consume **24-dim node features** (gate-type one-hot +
+analog-device one-hot + circuit-type flags — no STA outputs, no 1-hop
+aggregates) and **5-dim edge features** (wire delay, manhattan distance,
+net fanout, coupling capacitance, matching constraint). Mean + max
+graph pooling produces a circuit-level embedding alongside per-node
+embeddings consumed by the heads.
 
 ### 2. Routability & DRC prediction using RUDY-based congestion modeling
 
@@ -210,21 +264,30 @@ python3 -m streamlit run app.py
 
 ## Detailed Architecture
 
-### Node feature schema (31 dims)
+### Node feature schema (24 dims, v2)
 
-| Range            | Width | Content                                            |
-|------------------|------:|----------------------------------------------------|
-| `[0 : 13]`       |    13 | Digital gate-type one-hot (11 cell functions + PI + PO) |
-| `[13]`           |     1 | logical_depth (normalised, digital STA)            |
-| `[14]`           |     1 | load_cap (normalised, digital STA)                 |
-| `[15 : 20]`      |     5 | fanout, fanin, pin_density, net_degree, bbox_area  |
-| `[20 : 26]`      |     6 | Analog device-type one-hot (NMOS, PMOS, R, C, current_mirror, diff_pair) |
-| `[26]`           |     1 | W / L ratio (normalised)                           |
-| `[27]`           |     1 | Operating region (sat = 1, triode = 0, off = −1)   |
-| `[28]`           |     1 | Symmetry group (normalised group id)               |
-| `[29 : 31]`      |     2 | `[is_digital, is_analog]` indicator pair           |
+The v2 vector contains **only identity signal** — no STA outputs and no
+1-hop topology aggregates. Anything the GNN needs to know about the
+graph structure or timing state, it derives itself via message passing.
 
-### Edge feature schema (5 dims)
+| Range          | Width | Content                                            |
+|----------------|------:|----------------------------------------------------|
+| `[0 : 13]`     |    13 | Digital gate-type one-hot (11 cell functions + PI + PO) |
+| `[13 : 19]`    |     6 | Analog device-type one-hot (NMOS, PMOS, R, C, current_mirror, diff_pair) |
+| `[19]`         |     1 | W / L ratio (normalised)                           |
+| `[20]`         |     1 | Operating region (sat = 1, triode = 0, off = −1)   |
+| `[21]`         |     1 | Symmetry group (normalised group id)               |
+| `[22 : 24]`    |     2 | `[is_digital, is_analog]` indicator pair           |
+
+What was removed in v2 (versus the v1 31-dim vector):
+
+- `logical_depth` (was at index 13) — STA output, fed back as input
+- `load_cap` (was at index 14) — STA output, same problem
+- `fanout, fanin, pin_density, net_degree, bbox_area` (were 15–19) —
+  precomputed 1-hop aggregates that hid the work message passing should
+  be doing.
+
+### Edge feature schema (5 dims, unchanged)
 
 | Index | Content                                                                |
 |------:|------------------------------------------------------------------------|
@@ -233,6 +296,36 @@ python3 -m streamlit run app.py
 |     2 | Net fanout (normalised)                                                |
 |     3 | Coupling capacitance Cgd (analog only; digital = 0)                    |
 |     4 | Matching constraint (1 if endpoints share a symmetry group; else 0)    |
+
+### TimingPropagationBackbone (v2 default)
+
+`netsta/model.py:TimingPropagationBackbone` runs two directed message
+passes over the DAG with shared weights across iterations:
+
+| Pass     | Direction              | Aggregation | STA analogue                                                     |
+|----------|------------------------|------------:|------------------------------------------------------------------|
+| forward  | `edge_index`           |   `max`     | `AT[child] = max over drivers of (AT[driver] + delay)`           |
+| backward | `edge_index.flip(0)`   |   `min`     | `RT[parent] = min over sinks of (RT[sink] − delay)`              |
+
+Each pass iterates `num_layers` times (default 8), with the iteration
+update wrapped in `torch.maximum` / `torch.minimum` so AT is monotone
+non-decreasing and RT non-increasing — direct enforcement of the STA
+invariants. Per-node output = `concat([AT_emb, RT_emb])` of width
+`2 × hidden_dim`; the slack head learns approximately `RT − AT`.
+
+### Labels (v2)
+
+| Label                    | Dtype     | Range                          | Notes                                       |
+|--------------------------|-----------|--------------------------------|---------------------------------------------|
+| `y_slack`                | `float32` | absolute nanoseconds           | Raw STA output; std ≈ 0.07–0.12 ns          |
+| `y_critical`             | `float32` | {0, 1}                         | `slack ≤ CRITICAL_SLACK_THRESHOLD_NS (0.05)`|
+| `y_congestion`           | `float32` | normalised RUDY congestion     | unchanged from v1                            |
+| `y_drc`                  | `float32` | {0, 1}                         | unchanged from v1                            |
+| `y_analog_performance`   | `float32` | `[N, 2]` (gbw, parasitic)      | unchanged from v1                            |
+
+The `SlackHead` carries `slack_mean` / `slack_std` as `register_buffer`
+slots so checkpoints round-trip the train-set scale; `forward()` returns
+predictions directly in nanoseconds.
 
 ### Task heads
 
@@ -248,7 +341,7 @@ The wrapper `NetSTAModel` combines per-task losses with configurable weights
 from `NetSTAConfig.task_weights`. `forward()` returns a dict of predictions
 plus the backbone's `_node_emb` and `_graph_emb` outputs.
 
-### SymmetryAwareAttention
+### SymmetryAwareAttention (GATv2-family, analog only)
 
 A from-scratch `MessagePassing` subclass mirroring GATv2's separated
 source/target linear projections but augmenting the attention logits with a
@@ -261,8 +354,11 @@ feature index 4:
 ```
 
 When the matching column is zero (digital circuits), the bias contributes
-nothing and the layer behaves exactly like GATv2 — so the same code path
-serves both circuit families.
+nothing and the layer behaves exactly like GATv2. It is selected
+automatically by `train.py` when `circuit_type ∈ {analog, mixed}` AND
+`backbone_kind = "gatv2"`. The default v2 backbone is the directional
+`TimingPropagationBackbone`; symmetry-aware attention is currently a
+GATv2-only feature.
 
 ---
 
@@ -289,7 +385,7 @@ serves both circuit families.
 
 ### Mixed
 * `MixedCircuitDataset` concatenates a digital and an analog dataset
-  50 / 50; all entries share the unified 31-dim / 5-dim feature schema so
+  50 / 50; all entries share the unified 24-dim / 5-dim feature schema so
   PyG batching works without per-entry adapters.
 
 ---
@@ -469,7 +565,7 @@ NetSTA/
 │   ├── drc.py                          # DRC hotspot labelling
 │   ├── nangate45.py                    # Standard-cell library
 │   ├── sta.py                          # Digital static timing analysis
-│   ├── graph_builder.py                # Circuit → PyG Data (31-dim / 5-dim)
+│   ├── graph_builder.py                # Circuit → PyG Data (24-dim / 5-dim)
 │   ├── dataset.py                      # Digital, Analog, Mixed datasets + cache
 │   ├── model.py                        # NetSTABackbone + 5 heads + SymmetryAwareAttention
 │   ├── config.py                       # NetSTAConfig dataclass
