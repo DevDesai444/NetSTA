@@ -8,6 +8,7 @@ __pycache__/
 data/
 data_analog/
 data_mixed/
+data_smoke*/
 
 # Trained model artifacts — retrain from source. To share a checkpoint,
 # explicitly `git add -f checkpoints/<name>.pt`.

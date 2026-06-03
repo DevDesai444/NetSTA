@@ -1,0 +1,61 @@
+{
+  "config": {
+    "data_dir": "data_smoke_200",
+    "num_circuits": 200,
+    "epochs": 60,
+    "patience": 20,
+    "batch_size": 8,
+    "seed": 42,
+    "hidden": 64,
+    "num_layers": 6,
+    "output": "results/smoke_gnn_vs_mlp.json"
+  },
+  "slack_stats": {
+    "mean": 0.16870848834514618,
+    "std": 0.11351010948419571
+  },
+  "node_feature_dim": 24,
+  "edge_feature_dim": 5,
+  "NetSTA": {
+    "params": 35778,
+    "train_time_s": 27.583189417026006,
+    "best_epoch": 28,
+    "best_val_loss": 0.9878226071596146,
+    "slack": {
+      "mse": 0.011181995454934686,
+      "mae": 0.07797749949191811,
+      "r2": 0.11723779850466809,
+      "pearson": 0.3478780795438668
+    },
+    "critical_path": {
+      "accuracy": 0.7404699738903394,
+      "precision": 0.18672199170124482,
+      "recall": 0.46153846153846156,
+      "f1": 0.2658788774002954,
+      "auc_roc": 0.6570363744782349,
+      "best_threshold": 0.6162995723479149
+    }
+  },
+  "MLP": {
+    "params": 75650,
+    "train_time_s": 4.525934666977264,
+    "best_epoch": 6,
+    "best_val_loss": 1.1042289733886719,
+    "slack": {
+      "mse": 0.011692317969745852,
+      "mae": 0.08019270834433372,
+      "r2": 0.07695040718324409,
+      "pearson": 0.28488394686671287
+    },
+    "critical_path": {
+      "accuracy": 0.7268929503916449,
+      "precision": 0.2152777777777778,
+      "recall": 0.6358974358974359,
+      "f1": 0.3216601815823606,
+      "auc_roc": 0.7146064400715564,
+      "best_threshold": 0.49205384162825716
+    }
+  },
+  "pass_criterion": "gnn_r2 > mlp_r2 - 0.02",
+  "passed": true
+}
