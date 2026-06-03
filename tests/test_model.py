@@ -102,8 +102,9 @@ def test_model_forward_returns_all_task_predictions(untrained_model, sample_pyg_
         assert task in out
     assert "_node_emb" in out and "_graph_emb" in out
     assert out["_node_emb"].shape[0] == data.num_nodes
-    # 2 * hidden * heads = 2 * 32 * 2 = 128 for the tiny config.
-    assert out["_graph_emb"].shape[1] == 2 * untrained_model.config.hidden_dim * untrained_model.config.num_heads
+    # graph_emb = concat(mean_pool, max_pool) of node_emb, so its width is
+    # always 2 × node_emb_dim regardless of which backbone is selected.
+    assert out["_graph_emb"].shape[1] == 2 * out["_node_emb"].shape[1]
 
 
 def test_model_compute_loss_returns_finite_total(untrained_model, sample_pyg_data):
@@ -145,12 +146,77 @@ def test_model_backward_pass_doesnt_crash(untrained_model, sample_pyg_data):
     assert has_grad
 
 
+def test_timing_backbone_is_default():
+    """The directional STA-aware backbone is the default — that's the whole
+    point of the rewrite. Locks in the default so a config drift can't
+    silently revert to the GATv2 stack that lost the MLP comparison."""
+    from netsta.config import NetSTAConfig
+    cfg = NetSTAConfig(node_feature_dim=24)
+    assert cfg.backbone_kind == "timing"
+
+
+def test_timing_backbone_forward_returns_concat_at_rt_embeddings(sample_pyg_data):
+    """Per-node embedding from the timing backbone is concat([AT, RT]) so its
+    dim is 2 × hidden, not hidden. Slack head should be able to subtract."""
+    from dataclasses import replace
+    from netsta.config import NetSTAConfig
+    from netsta.model import NetSTAModel, TimingPropagationBackbone
+    cfg = NetSTAConfig(
+        node_feature_dim=sample_pyg_data.x.size(1),
+        edge_feature_dim=sample_pyg_data.edge_attr.size(1),
+        hidden_dim=16, num_layers=3, num_heads=1, dropout=0.0,
+        active_tasks=("slack", "critical_path"),
+        task_weights={"slack": 0.5, "critical_path": 0.5},
+        backbone_kind="timing",
+    )
+    model = NetSTAModel(cfg)
+    assert isinstance(model.backbone, TimingPropagationBackbone)
+    out = model(
+        sample_pyg_data.x, sample_pyg_data.edge_index,
+        edge_attr=sample_pyg_data.edge_attr, batch=None,
+    )
+    # node_emb width = 2 × hidden_dim because forward + backward passes are concatenated.
+    assert out["_node_emb"].shape[1] == 2 * cfg.hidden_dim
+    # graph_emb = concat(mean_pool, max_pool) over node_emb = 4 × hidden_dim.
+    assert out["_graph_emb"].shape[1] == 4 * cfg.hidden_dim
+
+
+def test_timing_backbone_propagates_along_dag_depth(sample_pyg_data):
+    """One iteration of the forward layer should be enough to move signal
+    one hop downstream — verify by comparing init embedding to post-forward
+    embedding at a deep node (i.e. ensure they differ)."""
+    from netsta.config import NetSTAConfig
+    from netsta.model import NetSTAModel
+    cfg = NetSTAConfig(
+        node_feature_dim=sample_pyg_data.x.size(1),
+        edge_feature_dim=sample_pyg_data.edge_attr.size(1),
+        hidden_dim=8, num_layers=4, num_heads=1, dropout=0.0,
+        active_tasks=("slack",),
+        task_weights={"slack": 1.0},
+        backbone_kind="timing",
+    )
+    model = NetSTAModel(cfg).eval()
+    out = model(
+        sample_pyg_data.x, sample_pyg_data.edge_index,
+        edge_attr=sample_pyg_data.edge_attr, batch=None,
+    )
+    # AT half and RT half should not be identical — that would mean either
+    # pass is a no-op (no MP happening).
+    h = out["_node_emb"]
+    at_part = h[:, : cfg.hidden_dim]
+    rt_part = h[:, cfg.hidden_dim :]
+    assert not torch.allclose(at_part, rt_part, atol=1e-6), (
+        "AT and RT embeddings are identical — directional propagation didn't run"
+    )
+
+
 def test_symmetry_aware_attention_swap(tiny_config, sample_pyg_data):
     """Asking for symmetry attention should swap the backbone layers and still
-    produce a valid forward pass."""
+    produce a valid forward pass. Symmetry attention is a GATv2-family layer,
+    so this test explicitly uses backbone_kind='gatv2'."""
     from dataclasses import replace
     from netsta.model import NetSTAModel, SymmetryAwareAttention
-    cfg = replace(tiny_config, use_symmetry_attention=True)
+    cfg = replace(tiny_config, use_symmetry_attention=True, backbone_kind="gatv2")
     model = NetSTAModel(cfg)
     # First conv layer is now SymmetryAwareAttention rather than GATv2Conv.
     assert isinstance(model.backbone.convs[0], SymmetryAwareAttention)

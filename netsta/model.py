@@ -200,6 +200,153 @@ class NetSTABackbone(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Directional STA-aware backbone
+# ---------------------------------------------------------------------------
+
+
+class _TimingMessageLayer(MessagePassing):
+    """One step of timing-style relaxation along a directed edge.
+
+    Forward semantics (when called with the original edge_index):
+      AT_new[child] = MAX over input drivers of
+                      (AT[driver] + delay_proj(edge_attr[driver -> child]))
+
+    The aggregator is element-wise max — directly analogous to the STA forward
+    pass where arrival time at a node is the max over its input drivers of
+    (driver_AT + propagation delay). Each embedding dimension can capture a
+    different facet of timing (e.g. critical path through different cell
+    types), so per-dimension max is a sensible generalization of scalar STA.
+
+    For backward (RT) propagation, instantiate a second copy and call with
+    edge_index flipped — and use `aggr_kind="min"`.
+    """
+
+    def __init__(self, hidden: int, edge_dim: int, aggr_kind: str = "max"):
+        if aggr_kind not in ("max", "min"):
+            raise ValueError(f"aggr_kind must be 'max' or 'min', got {aggr_kind}")
+        # PyG's scatter_max ignores nodes with no incoming edges (returns the
+        # default fill) — we re-combine with `x` outside this layer so source
+        # nodes keep their initial embedding.
+        super().__init__(aggr=aggr_kind, node_dim=0)
+        self.aggr_kind = aggr_kind
+        self.delay_proj = nn.Linear(edge_dim, hidden)
+        # A small mixer applied after aggregation so the layer can shape the
+        # propagated signal (otherwise a pure max-of-(parent + delay) might be
+        # too restrictive a function class).
+        self.mix = nn.Sequential(
+            nn.Linear(hidden, hidden),
+            nn.ELU(),
+            nn.Linear(hidden, hidden),
+        )
+
+    def forward(self, x, edge_index, edge_attr):
+        agg = self.propagate(edge_index, x=x, edge_attr=edge_attr)
+        return self.mix(agg)
+
+    def message(self, x_j, edge_attr):
+        # x_j: source-node embedding (the "driver" under forward propagation,
+        # or the "sink" under backward propagation since we flip edge_index).
+        # edge_attr: matched per-edge features (wire delay, distance, etc.).
+        delay = self.delay_proj(edge_attr)
+        if self.aggr_kind == "min":
+            # Backward semantics: RT propagates by SUBTRACTING delay.
+            return x_j - delay
+        return x_j + delay
+
+
+class TimingPropagationBackbone(nn.Module):
+    """STA-aware backbone with separate forward (AT) and backward (RT) passes.
+
+    Forward pass iterates a shared `_TimingMessageLayer(aggr='max')` over the
+    DAG `num_layers` times, mimicking K relaxation sweeps of arrival-time
+    propagation. Backward pass iterates a separately-parameterized layer over
+    the flipped DAG with min-aggregation, mimicking required-time propagation.
+
+    Per-node output = concat([AT_embedding, RT_embedding]); the slack head's
+    job is then approximately (RT - AT), which is exactly the STA formula.
+
+    With K = `num_layers` iterations, messages can reach gates K hops deep —
+    matched empirically to the dataset's typical max-depth (1-14 for 40-gate
+    circuits, hence default num_layers=8 in train.py once we wire that up).
+    """
+
+    def __init__(self, config: NetSTAConfig):
+        super().__init__()
+        self.config = config
+        self.num_iterations = config.num_layers
+        hidden = config.hidden_dim
+        self.dropout = config.dropout
+
+        # Inputs are mapped into a shared "timing embedding" space; the same
+        # initial embedding seeds both the AT and RT passes — they then evolve
+        # in opposite directions along the DAG.
+        self.input_proj = nn.Linear(config.node_feature_dim, hidden)
+        self.input_norm = BatchNorm(hidden)
+
+        self.forward_layer = _TimingMessageLayer(
+            hidden, config.edge_feature_dim, aggr_kind="max",
+        )
+        self.backward_layer = _TimingMessageLayer(
+            hidden, config.edge_feature_dim, aggr_kind="min",
+        )
+
+        # Pooled node embedding = [AT, RT]. The graph embedding doubles in
+        # width because we concatenate mean + max pool over that.
+        self.node_emb_dim = 2 * hidden
+        self.graph_emb_dim = 2 * self.node_emb_dim
+
+    def _iterate(
+        self,
+        h: torch.Tensor,
+        layer: _TimingMessageLayer,
+        edge_index: torch.Tensor,
+        edge_attr: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Run `num_iterations` relaxation sweeps with monotonic update.
+
+        For forward (max-agg) propagation we keep `max(h, propagated)` so the
+        AT embedding is non-decreasing — the STA invariant. Symmetric for
+        backward (min-agg).
+        """
+        ea = edge_attr
+        if ea is None or ea.numel() == 0 or edge_index.numel() == 0:
+            # Disconnected graph: nothing to propagate, return input as-is.
+            return h
+        combine = torch.maximum if layer.aggr_kind == "max" else torch.minimum
+        for _ in range(self.num_iterations):
+            propagated = layer(h, edge_index, ea)
+            h = combine(h, propagated)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+        return h
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: Optional[torch.Tensor] = None,
+        batch: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        h = self.input_proj(x)
+        h = self.input_norm(h)
+        h = F.elu(h)
+
+        # Forward / AT pass over the DAG as given.
+        h_at = self._iterate(h, self.forward_layer, edge_index, edge_attr)
+
+        # Backward / RT pass over the flipped DAG.
+        rev_edge_index = edge_index.flip(0) if edge_index.numel() else edge_index
+        h_rt = self._iterate(h, self.backward_layer, rev_edge_index, edge_attr)
+
+        node_emb = torch.cat([h_at, h_rt], dim=-1)
+        if batch is None:
+            batch = torch.zeros(node_emb.size(0), dtype=torch.long, device=node_emb.device)
+        graph_emb = torch.cat(
+            [global_mean_pool(node_emb, batch), global_max_pool(node_emb, batch)], dim=-1,
+        )
+        return {"node_emb": node_emb, "graph_emb": graph_emb}
+
+
+# ---------------------------------------------------------------------------
 # Task heads
 # ---------------------------------------------------------------------------
 
@@ -402,15 +549,33 @@ def _build_head(name: str, config: NetSTAConfig, in_dim: int) -> TaskHead:
 # ---------------------------------------------------------------------------
 
 
+_BACKBONE_REGISTRY = {
+    "gatv2": NetSTABackbone,
+    "timing": TimingPropagationBackbone,
+}
+
+
 class NetSTAModel(nn.Module):
-    """Backbone + active task heads with weighted multi-task loss."""
+    """Backbone + active task heads with weighted multi-task loss.
+
+    `config.backbone_kind` selects the encoder:
+      - "gatv2"  -> the original GATv2 stack (used by ablation comparisons)
+      - "timing" -> directional STA-aware propagation (default, for the
+                    timing-sensitive tasks slack and critical-path)
+    """
 
     def __init__(self, config: NetSTAConfig):
         super().__init__()
         config.validate()
         self.config = config
 
-        self.backbone = NetSTABackbone(config)
+        backbone_cls = _BACKBONE_REGISTRY.get(config.backbone_kind)
+        if backbone_cls is None:
+            raise ValueError(
+                f"Unknown backbone_kind '{config.backbone_kind}'. "
+                f"Available: {sorted(_BACKBONE_REGISTRY)}"
+            )
+        self.backbone = backbone_cls(config)
         self.heads = nn.ModuleDict(
             {
                 name: _build_head(name, config, self.backbone.node_emb_dim)
@@ -461,16 +626,21 @@ class NetSTAModel(nn.Module):
     ) -> List[dict]:
         """Build optimizer parameter groups with optional layer-wise LR decay.
 
-        Layer-wise LR is a common pretraining-fine-tuning trick: deeper
-        (closer-to-head) layers get the base LR, earlier layers get LR scaled
-        by `layer_decay ** distance_from_head`. Heads get the base LR.
+        Layer-wise LR is a pretraining-fine-tuning trick: deeper (closer-to-
+        head) layers get the base LR, earlier layers get LR scaled by
+        `layer_decay ** distance_from_head`. Only the GATv2 backbone has a
+        stack of independently-parameterized layers — the timing backbone
+        uses shared weights across iterations, so it gets a single group at
+        the base LR. Setting layer_decay = 1.0 also collapses to that.
         """
         lr = self.config.learning_rate if base_lr is None else base_lr
         decay = self.config.layer_decay if layer_decay is None else layer_decay
-        n = self.config.num_layers
 
+        if self.config.backbone_kind != "gatv2" or decay == 1.0:
+            return [{"params": list(self.parameters()), "lr": lr}]
+
+        n = self.config.num_layers
         groups: List[dict] = []
-        # input_proj is treated as the earliest layer.
         groups.append(
             {"params": list(self.backbone.input_proj.parameters()), "lr": lr * (decay ** n)}
         )

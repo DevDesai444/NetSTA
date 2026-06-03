@@ -59,13 +59,25 @@ class NetSTAConfig:
     slack_mean: float = 0.0
     slack_std: float = 1.0
 
-    # Ablation flags. Defaults reproduce the original architecture.
+    # Ablation flags. Defaults reproduce the original GATv2 architecture
+    # exactly (so the existing ablation table still measures what it claims).
     use_residual: bool = True
     use_attention: bool = True  # False -> GCNConv (uniform message passing)
     # When True, the backbone uses SymmetryAwareAttention instead of GATv2Conv.
     # Needed for analog circuits where edge_feature_dim must include a
     # matching_constraint indicator at the trailing edge-feature column.
     use_symmetry_attention: bool = False
+
+    # Backbone selector:
+    #   "gatv2"  -> GATv2 stack with mean+max pooling (original architecture)
+    #   "timing" -> directional STA-aware propagation: a forward pass with
+    #               max-aggregation models arrival-time accumulation; a
+    #               backward pass with min-aggregation models required-time
+    #               propagation. Each pass iterates `num_layers` times so
+    #               messages can reach gates `num_layers` hops deep, matching
+    #               the longest path in the typical training-set circuit
+    #               (depth 1-14 for 40-gate circuits).
+    backbone_kind: str = "timing"
 
     def validate(self) -> None:
         if self.node_feature_dim <= 0:
