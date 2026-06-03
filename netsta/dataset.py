@@ -35,25 +35,56 @@ DATA_SCHEMA_VERSION = 7
 
 
 class NetSTAAugment:
-    """Per-graph augmentation: gaussian node-feature noise + edge dropout.
+    """Per-graph augmentation appropriate to the identity-only node schema.
 
-    Designed to be applied inside __getitem__ so each epoch sees a fresh
-    sample. Operates on a clone so the cached Data object stays clean.
+    The node-feature vector is now dominated by one-hot type indicators
+    (gate-type, analog-device-type, digital/analog flags); additive Gaussian
+    noise on those columns is semantically empty — a one-hot perturbed by
+    noise is still uniquely decodable to the same type. So node noise is
+    OFF by default. The two augmentations that *do* match the physics:
+
+    * Edge-attribute Gaussian noise — jitters wire-delay, manhattan-distance,
+      and net-fanout edge features by a small fraction of their std.
+      Encourages robustness to placement/wire-length perturbations the model
+      will see in any real netlist that wasn't optimally placed.
+    * Edge dropout — removes a small fraction of edges per pass. Forces the
+      message-passing layers to be robust to occasional missing connections
+      (a router not yet having routed a particular wire, a parsing failure,
+      etc.).
+
+    `node_noise_sigma > 0` is honored for backwards compatibility but is no
+    longer the default — pass it explicitly only when an experiment needs
+    it (e.g. a future schema with continuous node features).
     """
 
-    def __init__(self, node_noise_sigma: float = 0.01, edge_dropout_p: float = 0.05):
-        self.node_noise_sigma = node_noise_sigma
+    def __init__(
+        self,
+        edge_noise_sigma: float = 0.05,
+        edge_dropout_p: float = 0.05,
+        node_noise_sigma: float = 0.0,
+    ):
+        self.edge_noise_sigma = edge_noise_sigma
         self.edge_dropout_p = edge_dropout_p
+        self.node_noise_sigma = node_noise_sigma
 
     def __call__(self, data):
         data = data.clone()
         if self.node_noise_sigma > 0:
             data.x = data.x + torch.randn_like(data.x) * self.node_noise_sigma
-        if self.edge_dropout_p > 0 and data.edge_index.size(1) > 0:
-            keep = torch.rand(data.edge_index.size(1)) > self.edge_dropout_p
-            data.edge_index = data.edge_index[:, keep]
-            if data.edge_attr is not None:
-                data.edge_attr = data.edge_attr[keep]
+        if data.edge_index.size(1) > 0:
+            if self.edge_noise_sigma > 0 and data.edge_attr is not None:
+                # Noise scaled per-column by that column's std so a 0.05 sigma
+                # means a 5% perturbation regardless of feature range.
+                col_std = data.edge_attr.std(dim=0, unbiased=False).clamp_min(1e-6)
+                noise = torch.randn_like(data.edge_attr) * (
+                    self.edge_noise_sigma * col_std
+                )
+                data.edge_attr = data.edge_attr + noise
+            if self.edge_dropout_p > 0:
+                keep = torch.rand(data.edge_index.size(1)) > self.edge_dropout_p
+                data.edge_index = data.edge_index[:, keep]
+                if data.edge_attr is not None:
+                    data.edge_attr = data.edge_attr[keep]
         return data
 
 
