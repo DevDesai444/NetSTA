@@ -25,6 +25,7 @@ from _bench_utils import (
     collect_test_predictions,
     ensure_dirs,
     fit_torch_model,
+    compute_slack_stats,
     make_netsta,
     save_json,
     save_text,
@@ -111,6 +112,7 @@ def run_ablation(name, ablation, dataset, node_feature_dim, edge_feature_dim,
     val_loader = PygLoader(val_ds, batch_size=batch_size)
     test_loader = PygLoader(test_ds, batch_size=batch_size)
 
+    slack_mean, slack_std = compute_slack_stats(dataset, train_idx)
     model_kwargs = dict(
         hidden_dim=64,
         num_layers=ablation.get("num_layers", 4),
@@ -118,6 +120,8 @@ def run_ablation(name, ablation, dataset, node_feature_dim, edge_feature_dim,
         use_residual=ablation.get("use_residual", True),
         use_attention=ablation.get("use_attention", True),
         tasks=ablation.get("tasks", ("slack", "critical_path")),
+        slack_mean=slack_mean,
+        slack_std=slack_std,
     )
     model = make_netsta(node_feature_dim, edge_feature_dim, **model_kwargs).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

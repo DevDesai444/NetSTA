@@ -53,6 +53,12 @@ class NetSTAConfig:
     # Class-imbalance cap for the critical-path BCE pos_weight.
     critical_pos_weight_cap: float = 10.0
 
+    # Train-set summary stats baked into SlackHead so its forward returns
+    # predictions in absolute ns. Filled in by train.py from the train split;
+    # checkpoints round-trip them via the head's register_buffer slots.
+    slack_mean: float = 0.0
+    slack_std: float = 1.0
+
     # Ablation flags. Defaults reproduce the original architecture.
     use_residual: bool = True
     use_attention: bool = True  # False -> GCNConv (uniform message passing)

@@ -159,8 +159,16 @@ def run_test(
     test_loader = DataLoader(test_data, batch_size=batch_size)
     train_metric_loader = DataLoader(actual_train, batch_size=batch_size)
 
+    # Standardize on the train side only — testing on a distribution-shifted
+    # split would otherwise leak its own scale into the model.
+    from netsta.stats import DatasetStats
+    slack_stats = DatasetStats.from_slack_tensors(d.y_slack for d in actual_train)
+
     torch.manual_seed(seed)
-    model = make_netsta(node_feature_dim, edge_feature_dim).to(device)
+    model = make_netsta(
+        node_feature_dim, edge_feature_dim,
+        slack_mean=slack_stats.slack_mean, slack_std=slack_stats.slack_std,
+    ).to(device)
     best_state, *_ = fit_torch_model(
         model, train_loader, val_loader, device,
         epochs=epochs, patience=patience, warmup_epochs=warmup_epochs,

@@ -28,10 +28,20 @@ from torch_geometric.nn import (
 from .model import CriticalPathHead, SlackHead
 
 
-def _build_heads(in_dim: int, hidden: int, dropout: float, pos_weight_cap: float):
+def _build_heads(
+    in_dim: int,
+    hidden: int,
+    dropout: float,
+    pos_weight_cap: float,
+    slack_mean: float = 0.0,
+    slack_std: float = 1.0,
+):
     return nn.ModuleDict(
         {
-            "slack": SlackHead(in_dim, hidden, dropout),
+            "slack": SlackHead(
+                in_dim, hidden, dropout,
+                slack_mean=slack_mean, slack_std=slack_std,
+            ),
             "critical_path": CriticalPathHead(in_dim, hidden, dropout, pos_weight_cap),
         }
     )
@@ -76,7 +86,8 @@ class MLPBaseline(_BaselineMixin, nn.Module):
     """
 
     def __init__(self, node_feature_dim, hidden=128, dropout=0.1, lr=1e-3,
-                 task_weights=None, pos_weight_cap=10.0):
+                 task_weights=None, pos_weight_cap=10.0,
+                 slack_mean: float = 0.0, slack_std: float = 1.0):
         super().__init__()
         in_dim = node_feature_dim * 3  # [self, mean, max]
         self.encoder = nn.Sequential(
@@ -89,7 +100,10 @@ class MLPBaseline(_BaselineMixin, nn.Module):
             nn.Linear(hidden, hidden),
             nn.ELU(),
         )
-        self.heads = _build_heads(hidden, hidden, dropout, pos_weight_cap)
+        self.heads = _build_heads(
+            hidden, hidden, dropout, pos_weight_cap,
+            slack_mean=slack_mean, slack_std=slack_std,
+        )
         self.task_weights = task_weights or {"slack": 0.5, "critical_path": 0.5}
         self.base_lr = lr
 
@@ -121,13 +135,18 @@ class _MessagePassingBaseline(_BaselineMixin, nn.Module):
         lr: float = 1e-3,
         task_weights=None,
         pos_weight_cap: float = 10.0,
+        slack_mean: float = 0.0,
+        slack_std: float = 1.0,
     ):
         super().__init__()
         self.dropout = dropout
         self.input_proj = nn.Linear(node_feature_dim, hidden)
         self.convs = nn.ModuleList([conv_factory(hidden, hidden) for _ in range(num_layers)])
         self.norms = nn.ModuleList([BatchNorm(hidden) for _ in range(num_layers)])
-        self.heads = _build_heads(hidden, hidden, dropout, pos_weight_cap)
+        self.heads = _build_heads(
+            hidden, hidden, dropout, pos_weight_cap,
+            slack_mean=slack_mean, slack_std=slack_std,
+        )
         self.task_weights = task_weights or {"slack": 0.5, "critical_path": 0.5}
         self.base_lr = lr
 

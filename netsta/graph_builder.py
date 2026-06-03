@@ -227,6 +227,9 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
         edge_attr = torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float)
 
     # ----- Labels.
+    # Slack is stored as raw nanoseconds, not per-graph normalized. Global
+    # mean/std for standardization are computed once over the train split and
+    # carried inside the SlackHead — see netsta.stats and netsta.model.SlackHead.
     if is_analog:
         # No digital STA — zero-fill so mixed-mode training can still batch.
         y_slack = torch.zeros(num_nodes, dtype=torch.float)
@@ -238,12 +241,9 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
         gbw_col = [node_timing.get(nid, {}).get("gbw_score", 0.0) for nid in node_order]
         par_col = [node_timing.get(nid, {}).get("parasitic_impact", 0.0) for nid in node_order]
         y_analog = torch.tensor(list(zip(gbw_col, par_col)), dtype=torch.float)
-        max_slack = 1.0
     else:
         slacks = [node_timing.get(nid, {}).get("slack", 0.0) for nid in node_order]
-        max_slack = max((abs(s) for s in slacks), default=1.0)
-        max_slack = max(max_slack, 1e-6)
-        y_slack = torch.tensor([s / max_slack for s in slacks], dtype=torch.float)
+        y_slack = torch.tensor(slacks, dtype=torch.float)
         y_critical = torch.tensor(
             [1.0 if node_timing.get(nid, {}).get("is_critical", False) else 0.0
              for nid in node_order],
@@ -271,7 +271,6 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
         num_nodes=num_nodes,
     )
 
-    data.max_slack = float(max_slack)
     data.is_analog = bool(is_analog)
     data.clock_period = sta_results.get("clock_period_ns", 0.0)
     data.circuit_name = circuit.name

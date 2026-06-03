@@ -24,6 +24,7 @@ from _bench_utils import (
     collect_test_predictions,
     ensure_dirs,
     fit_torch_model,
+    compute_slack_stats,
     make_netsta,
     save_json,
     save_text,
@@ -52,7 +53,11 @@ def run_seed(seed, dataset, node_feature_dim, edge_feature_dim,
         train_transform=NetSTAAugment(),
     )
 
-    model = make_netsta(node_feature_dim, edge_feature_dim).to(device)
+    slack_mean, slack_std = compute_slack_stats(dataset, train_idx)
+    model = make_netsta(
+        node_feature_dim, edge_feature_dim,
+        slack_mean=slack_mean, slack_std=slack_std,
+    ).to(device)
     best_state, best_val_loss, best_epoch, _ = fit_torch_model(
         model, train_loader, val_loader, device,
         epochs=epochs, patience=patience, warmup_epochs=warmup_epochs,

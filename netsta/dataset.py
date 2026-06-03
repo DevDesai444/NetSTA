@@ -22,8 +22,13 @@ from .graph_builder import circuit_to_pyg
 
 # Bump when the on-disk PyG Data schema changes (e.g. new label field).
 # v5: drop logical_depth, load_cap, and 5 1-hop topology aggregates from
-# node features (31 -> 24 dims). Forces GNN to derive topology via MP.
-DATA_SCHEMA_VERSION = 5
+#     node features (31 -> 24 dims). Forces GNN to derive topology via MP.
+# v6: switch y_slack from per-graph normalized [-1, 1] to raw absolute ns.
+#     Standardization happens inside SlackHead via persisted train-set stats.
+#     y_critical now uses fixed CRITICAL_SLACK_THRESHOLD_NS, not a per-graph
+#     quantile. Also: STA propagation rewrite means slack values themselves
+#     change — caches MUST regenerate.
+DATA_SCHEMA_VERSION = 6
 
 
 class NetSTAAugment:

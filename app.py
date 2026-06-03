@@ -345,7 +345,7 @@ def plot_timing_dag(circuit, sta_results, predictions, color_mode):
             f"Slack: {slack:.4f}<br>Critical (GT): {is_crit_gt}"
         )
         if predictions and "predicted_slack" in predictions:
-            hover += f"<br>Pred slack (norm): {predictions['predicted_slack'][i]:.3f}"
+            hover += f"<br>Pred slack: {predictions['predicted_slack'][i]:.4f} ns"
         texts.append(hover)
 
     if color_mode == "slack":

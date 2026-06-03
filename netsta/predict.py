@@ -44,7 +44,7 @@ def predict_circuit(
       - active_tasks: tasks the loaded model produces predictions for
       - predictions / ground_truth: {task_name: np.ndarray} per active task
       - sta_results: full STA results
-      - data: the PyG Data tensor (carries y_* labels, max_slack, etc.)
+      - data: the PyG Data tensor (carries y_* labels and circuit metadata)
       - node_emb / graph_emb: backbone outputs (numpy)
       - Backwards-compatible aliases for slack / critical_path (used by the
         existing Streamlit timing-analysis path).
@@ -76,7 +76,10 @@ def predict_circuit(
         "data": data,
         "node_emb": preds["_node_emb"].detach().cpu().numpy(),
         "graph_emb": preds["_graph_emb"].detach().cpu().numpy(),
-        "max_slack": float(getattr(data, "max_slack", 1.0)),
+        # SlackHead returns predictions in absolute ns; the head's internal
+        # slack_mean/std buffers (round-tripped via the checkpoint) handle the
+        # standardization so callers always see physical units.
+        "slack_unit": "ns",
     }
 
     # Backwards-compat fields consumed by older streamlit/predict callers.

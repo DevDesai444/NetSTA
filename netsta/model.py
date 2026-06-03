@@ -235,19 +235,41 @@ def _mlp(in_dim: int, hidden: int, dropout: float) -> nn.Sequential:
 
 
 class SlackHead(TaskHead):
-    """Per-node normalized-slack regression (MSE)."""
+    """Per-node absolute-slack regression (ns).
+
+    The head returns predictions directly in nanoseconds. To keep training
+    well-conditioned when ns values are tiny (slack std is typically 0.05 -
+    0.15 ns), the loss standardizes both prediction and target by the
+    train-set slack std before computing MSE — equivalent to optimizing on
+    z-scores while keeping the forward API in physical units. The mean and
+    std are persisted on the head via register_buffer so checkpoints
+    round-trip them automatically and downstream callers (predict.py,
+    streamlit app) get ns out of the box.
+    """
 
     name = "slack"
 
-    def __init__(self, in_dim: int, hidden: int, dropout: float):
+    def __init__(
+        self,
+        in_dim: int,
+        hidden: int,
+        dropout: float,
+        slack_mean: float = 0.0,
+        slack_std: float = 1.0,
+    ):
         super().__init__()
         self.mlp = _mlp(in_dim, hidden, dropout)
+        self.register_buffer("slack_mean", torch.tensor(float(slack_mean)))
+        self.register_buffer("slack_std", torch.tensor(max(float(slack_std), 1e-3)))
 
     def forward(self, node_emb, graph_emb=None, batch=None):
-        return self.mlp(node_emb).squeeze(-1)
+        # Predict in normalized z-space, then map back to ns for the caller.
+        z = self.mlp(node_emb).squeeze(-1)
+        return z * self.slack_std + self.slack_mean
 
     def loss(self, pred, target):
-        return F.mse_loss(pred, target)
+        # Cancel the additive mean in the standardization for cleaner gradients.
+        return F.mse_loss(pred / self.slack_std, target / self.slack_std)
 
 
 class CriticalPathHead(TaskHead):
@@ -367,6 +389,11 @@ def _build_head(name: str, config: NetSTAConfig, in_dim: int) -> TaskHead:
     cls = TASK_HEAD_REGISTRY[name]
     if cls is CriticalPathHead:
         return cls(in_dim, config.hidden_dim, config.dropout, config.critical_pos_weight_cap)
+    if cls is SlackHead:
+        return cls(
+            in_dim, config.hidden_dim, config.dropout,
+            slack_mean=config.slack_mean, slack_std=config.slack_std,
+        )
     return cls(in_dim, config.hidden_dim, config.dropout)
 
 

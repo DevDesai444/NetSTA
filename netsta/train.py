@@ -28,6 +28,7 @@ from .dataset import (
     TransformSubset,
 )
 from .model import NetSTAModel
+from .stats import DatasetStats, STATS_FILENAME
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +317,17 @@ def train(
     print(f"Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
     print(f"Active tasks: {list(tasks)}")
 
+    # Compute slack mean/std on the train split (raw ns) so SlackHead can
+    # standardize the loss internally while keeping forward outputs in ns.
+    stats = DatasetStats.from_slack_tensors(
+        dataset[i].y_slack for i in train_idx
+    )
+    stats_path = os.path.join(checkpoint_dir, STATS_FILENAME)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    stats.save(stats_path)
+    print(f"Slack stats (train split): mean={stats.slack_mean:.4f} ns, "
+          f"std={stats.slack_std:.4f} ns -> {stats_path}")
+
     use_symmetry = circuit_type in ("analog", "mixed")
     config = NetSTAConfig(
         node_feature_dim=in_channels,
@@ -328,6 +340,8 @@ def train(
         task_weights=_resolve_task_weights(tasks, task_weights),
         active_tasks=tuple(tasks),
         use_symmetry_attention=use_symmetry,
+        slack_mean=stats.slack_mean,
+        slack_std=stats.slack_std,
     )
     model = NetSTAModel(config).to(dev)
 

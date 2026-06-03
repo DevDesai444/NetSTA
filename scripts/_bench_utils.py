@@ -204,6 +204,8 @@ def make_netsta(
     task_weights=None,
     use_residual: bool = True,
     use_attention: bool = True,
+    slack_mean: float = 0.0,
+    slack_std: float = 1.0,
 ) -> NetSTAModel:
     config = NetSTAConfig(
         node_feature_dim=node_feature_dim,
@@ -217,5 +219,21 @@ def make_netsta(
         active_tasks=tuple(tasks),
         use_residual=use_residual,
         use_attention=use_attention,
+        slack_mean=slack_mean,
+        slack_std=slack_std,
     )
     return NetSTAModel(config)
+
+
+def compute_slack_stats(dataset, train_idx):
+    """Mean/std of y_slack across the training subset (ns).
+
+    Lives here so every benchmark script reuses the same stat — comparing GNN
+    vs MLP vs GCN with different slack standardizations would be apples-to-
+    oranges. Returns (slack_mean, slack_std). std is floored at 1e-3.
+    """
+    from netsta.stats import DatasetStats
+    stats = DatasetStats.from_slack_tensors(
+        dataset[i].y_slack for i in train_idx
+    )
+    return stats.slack_mean, stats.slack_std

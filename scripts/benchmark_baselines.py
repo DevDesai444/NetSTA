@@ -25,6 +25,7 @@ from _bench_utils import (
     RESULTS_DIR,
     build_loaders,
     collect_test_predictions,
+    compute_slack_stats,
     ensure_dirs,
     fit_torch_model,
     make_netsta,
@@ -213,14 +214,28 @@ def main():
     print(f"Node features: {node_feature_dim}, Edge features: {edge_feature_dim}")
     print(f"Train/Val/Test: {len(train_idx)}/{len(val_idx)}/{len(test_idx)}")
 
+    # Compute slack stats once from the train split; pass to every torch model
+    # so the loss is computed on the same z-scale. Sklearn baselines regress
+    # against raw ns and don't need standardization.
+    slack_mean, slack_std = compute_slack_stats(dataset, train_idx)
+    print(f"Slack train-set stats: mean={slack_mean:.4f} ns, std={slack_std:.4f} ns")
+
     results = {}
 
     # --- Torch baselines ---
     torch_specs = [
-        ("MLP", "mlp", lambda: MLPBaseline(node_feature_dim, hidden=128)),
-        ("GCN", "gcn", lambda: GCNBaseline(node_feature_dim, hidden=256, num_layers=4)),
-        ("GraphSAGE", "graphsage", lambda: GraphSAGEBaseline(node_feature_dim, hidden=256, num_layers=4)),
-        ("NetSTA", "netsta", lambda: make_netsta(node_feature_dim, edge_feature_dim)),
+        ("MLP", "mlp",
+         lambda: MLPBaseline(node_feature_dim, hidden=128,
+                             slack_mean=slack_mean, slack_std=slack_std)),
+        ("GCN", "gcn",
+         lambda: GCNBaseline(node_feature_dim, hidden=256, num_layers=4,
+                             slack_mean=slack_mean, slack_std=slack_std)),
+        ("GraphSAGE", "graphsage",
+         lambda: GraphSAGEBaseline(node_feature_dim, hidden=256, num_layers=4,
+                                   slack_mean=slack_mean, slack_std=slack_std)),
+        ("NetSTA", "netsta",
+         lambda: make_netsta(node_feature_dim, edge_feature_dim,
+                             slack_mean=slack_mean, slack_std=slack_std)),
     ]
     for label, key, factory in torch_specs:
         if key in skip:
