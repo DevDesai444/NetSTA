@@ -52,24 +52,21 @@ def test_arrival_time_monotonic_along_signal_path(sample_digital_circuit):
             )
 
 
-def test_critical_nodes_match_min_slack_reported_by_engine(sample_digital_circuit):
-    """The STA flags is_critical = (slack <= min_slack + 0.3*range).
-
-    For circuits where only a few nodes lie on a reachable PI→PO path, this
-    threshold collapses to ~min_slack and every flagged node's slack should
-    match the engine's reported `min_slack_ns` (within numerical tolerance).
+def test_critical_nodes_have_slack_at_or_below_threshold(sample_digital_circuit):
+    """is_critical is set when slack <= CRITICAL_SLACK_THRESHOLD_NS (fixed
+    absolute threshold). Every flagged node's slack must satisfy that bound.
     """
+    from netsta.sta import CRITICAL_SLACK_THRESHOLD_NS
     r = run_sta(sample_digital_circuit)
     nt = r["node_timing"]
     crit = [t for t in nt.values() if t.get("is_critical")]
     if not crit:
         pytest.skip("circuit has no critical nodes at this clock period")
-    reported_min = r["min_slack_ns"]
     for t in crit:
         assert math.isfinite(t["slack"])
-        # Critical slack should be at or near the reported minimum (the
-        # threshold is min + 30% of slack range — small for our circuits).
-        assert t["slack"] <= reported_min + 1e-3
+        assert t["slack"] <= CRITICAL_SLACK_THRESHOLD_NS + 1e-9, (
+            f"flagged critical but slack={t['slack']:.6f} > threshold"
+        )
 
 
 def test_num_critical_nodes_matches_node_timing(sample_digital_circuit):
@@ -80,10 +77,7 @@ def test_num_critical_nodes_matches_node_timing(sample_digital_circuit):
 
 def test_sta_on_small_circuit_returns_consistent_fields():
     """Smallest meaningful test: every node carries arrival_time, slack, and
-    is_critical fields; PIs and POs land at non-negative arrival times.
-    (This STA is a simplified ordering+slack engine — it doesn't propagate
-    real delays — so we assert finiteness rather than strict positivity.)
-    """
+    is_critical fields; PIs and POs land at non-negative arrival times."""
     c = generate_circuit(num_inputs=2, num_gates=5, num_outputs=1, seed=99)
     r = run_sta(c)
     nt = r["node_timing"]
@@ -94,3 +88,48 @@ def test_sta_on_small_circuit_returns_consistent_fields():
         assert math.isfinite(t["arrival_time"]) and t["arrival_time"] >= 0
         assert math.isfinite(t["slack"])
         assert isinstance(t["is_critical"], bool)
+
+
+def test_sta_actually_propagates_arrival_time_through_dag():
+    """Regression test for the old topological_sort double-increment bug
+    that left arrival_time stuck at 0 for every gate, which then silently
+    masked the broken STA behind the leaked-feature MLP. After the fix,
+    arrival_time at gates deep in the DAG must be strictly positive and
+    logical_depth must reflect the actual DAG depth (> 1).
+    """
+    c = generate_circuit(num_inputs=8, num_gates=40, num_outputs=4, seed=0)
+    r = run_sta(c)
+    nt = r["node_timing"]
+
+    assert r["max_arrival_time_ns"] > 0.01, (
+        f"max_arrival_time={r['max_arrival_time_ns']} — AT didn't propagate"
+    )
+    gate_ats = [nt[g]["arrival_time"] for g in c.gate_ids]
+    assert max(gate_ats) > 0.01, "every gate has AT=0 — propagation broken"
+
+    gate_depths = [nt[g]["logical_depth"] for g in c.gate_ids]
+    assert max(gate_depths) > 1, (
+        f"max logical_depth={max(gate_depths)} — depth not propagating"
+    )
+
+    # Slack must show real spread, not collapse to a single value.
+    gate_slacks = [nt[g]["slack"] for g in c.gate_ids]
+    spread = max(gate_slacks) - min(gate_slacks)
+    assert spread > 0.01, f"slack collapsed to a point (spread={spread})"
+
+
+def test_critical_path_label_is_fixed_absolute_threshold():
+    """The is_critical label must be `slack <= CRITICAL_SLACK_THRESHOLD_NS`,
+    NOT a per-graph quantile. Two circuits with identical slack values must
+    flag identical critical-path nodes regardless of what the rest of each
+    circuit's slack distribution looks like.
+    """
+    from netsta.sta import CRITICAL_SLACK_THRESHOLD_NS
+    c = generate_circuit(num_inputs=6, num_gates=30, num_outputs=3, seed=7)
+    r = run_sta(c)
+    for nid, t in r["node_timing"].items():
+        expected = t["slack"] <= CRITICAL_SLACK_THRESHOLD_NS
+        assert t["is_critical"] == expected, (
+            f"{nid}: slack={t['slack']:.4f}, threshold={CRITICAL_SLACK_THRESHOLD_NS}, "
+            f"is_critical={t['is_critical']} (expected {expected})"
+        )
