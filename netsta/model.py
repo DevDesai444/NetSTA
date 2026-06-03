@@ -330,6 +330,14 @@ class TimingPropagationBackbone(nn.Module):
         self.backward_layer = _TimingMessageLayer(
             hidden, config.edge_feature_dim, aggr_kind="min",
         )
+        # Projection from a per-graph summary of the AT pass (mean + max pool)
+        # into the per-node seed for the backward / RT pass. Initialized at
+        # small scale so early training stays close to the "no seed" baseline
+        # and the model learns to use the clock-period signal incrementally
+        # rather than all at once.
+        self.rt_seed_proj = nn.Linear(2 * hidden, hidden)
+        nn.init.normal_(self.rt_seed_proj.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.rt_seed_proj.bias)
 
         # Pooled node embedding = [AT, RT]. The graph embedding doubles in
         # width because we concatenate mean + max pool over that.
@@ -370,17 +378,30 @@ class TimingPropagationBackbone(nn.Module):
         h = self.input_proj(x)
         h = self.input_norm(h)
         h = F.elu(h)
+        if batch is None:
+            batch = torch.zeros(h.size(0), dtype=torch.long, device=h.device)
 
-        # Forward / AT pass over the DAG as given.
+        # Forward / AT pass over the DAG. Arrival-time accumulates outward
+        # from the PIs.
         h_at = self._iterate(h, self.forward_layer, edge_index, edge_attr)
 
-        # Backward / RT pass over the flipped DAG.
+        # Boundary condition for the backward pass: required_time at the POs
+        # equals the clock period, which in our STA scales with max_AT and
+        # therefore VARIES per graph. A purely local backward sweep cannot
+        # discover this from local features alone, so we inject a per-graph
+        # AT summary (mean + max pool of h_at) into every node's RT seed.
+        # This gives the backward sweep the clock-period context it needs
+        # while keeping each node's local embedding intact.
+        graph_at = torch.cat(
+            [global_mean_pool(h_at, batch), global_max_pool(h_at, batch)], dim=-1,
+        )                                                       # [B, 2*hidden]
+        seed_offset = self.rt_seed_proj(graph_at)               # [B, hidden]
+        h_rt_seed = h + seed_offset[batch]
+
         rev_edge_index = edge_index.flip(0) if edge_index.numel() else edge_index
-        h_rt = self._iterate(h, self.backward_layer, rev_edge_index, edge_attr)
+        h_rt = self._iterate(h_rt_seed, self.backward_layer, rev_edge_index, edge_attr)
 
         node_emb = torch.cat([h_at, h_rt], dim=-1)
-        if batch is None:
-            batch = torch.zeros(node_emb.size(0), dtype=torch.long, device=node_emb.device)
         graph_emb = torch.cat(
             [global_mean_pool(node_emb, batch), global_max_pool(node_emb, batch)], dim=-1,
         )

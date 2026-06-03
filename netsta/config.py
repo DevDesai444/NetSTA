@@ -10,15 +10,19 @@ from typing import Dict, Tuple
 
 
 # Default training targets all three timing quantities the directional
-# backbone is structured around. Auxiliary AT/RT supervision anchors the
-# backbone halves to the physical quantities they represent; the slack head
-# then derives slack compositionally as RT_pred - AT_pred. critical_path is
-# available on demand via --tasks but is no longer in the default set —
-# ablation shows the BCE gradient interferes with slack regression.
+# backbone is structured around. With the compositional SlackHead in play,
+# slack_pred = RT_pred - AT_pred mechanically, so the slack loss is just
+# an extra constraint on (RT - AT). The individual AT and RT losses are the
+# ones that anchor the backbone halves to the right absolute values. Weights
+# are balanced so the auxiliary supervision matches slack in magnitude —
+# under-weighted AT/RT lets the slack gradient dominate and the model
+# satisfies slack = RT - AT by collapsing both predictions toward the slack
+# target rather than tracking AT and RT independently. critical_path is
+# available on demand via --tasks but is not in the default set.
 DEFAULT_TASK_WEIGHTS: Dict[str, float] = {
-    "slack": 1.0,
-    "arrival_time": 0.3,
-    "required_time": 0.3,
+    "slack": 0.5,
+    "arrival_time": 1.0,
+    "required_time": 1.0,
 }
 
 DEFAULT_ACTIVE_TASKS: Tuple[str, ...] = (

@@ -222,16 +222,25 @@ def validate(model, loader, device):
 
 
 def _resolve_task_weights(active_tasks, task_weights):
-    """Normalize weight dict to active tasks; default to uniform if unspecified."""
-    if not task_weights:
-        w = 1.0 / len(active_tasks)
-        return {t: w for t in active_tasks}
-    # Pull from defaults where available, then fallback to uniform 1/n.
-    out = {}
+    """Build a weight dict for active_tasks.
+
+    Resolution order per task:
+      1. user-supplied value in `task_weights` if present
+      2. DEFAULT_TASK_WEIGHTS for that task name
+      3. uniform 1/N fallback for the residual
+
+    The previous behavior of returning a flat 1/N dict whenever
+    task_weights was None bypassed DEFAULT_TASK_WEIGHTS entirely, so the
+    carefully chosen default ratios (slack=0.5, AT=1.0, RT=1.0 — auxiliary
+    supervision balanced against the slack constraint to prevent collapse
+    of the compositional readout) never reached the model.
+    """
+    user = task_weights or {}
     fallback = 1.0 / len(active_tasks)
+    out = {}
     for t in active_tasks:
-        if t in task_weights:
-            out[t] = task_weights[t]
+        if t in user:
+            out[t] = user[t]
         elif t in DEFAULT_TASK_WEIGHTS:
             out[t] = DEFAULT_TASK_WEIGHTS[t]
         else:

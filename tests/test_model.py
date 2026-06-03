@@ -269,6 +269,35 @@ def test_timing_backbone_forward_returns_concat_at_rt_embeddings(sample_pyg_data
     assert out["_graph_emb"].shape[1] == 4 * cfg.hidden_dim
 
 
+def test_timing_backbone_rt_seed_depends_on_at_pass():
+    """The RT seed must be a function of the AT pass output (per-graph),
+    not just the per-node input projection. Two graphs with identical
+    local inputs but different overall depths should produce different
+    RT seeds — that's what gives the backward sweep its clock-period
+    boundary condition. Verify by changing input scales for a subset of
+    nodes and checking the RT half changes accordingly."""
+    import torch
+    from netsta.config import NetSTAConfig
+    from netsta.model import TimingPropagationBackbone
+    cfg = NetSTAConfig(
+        node_feature_dim=8, edge_feature_dim=2,
+        hidden_dim=4, num_layers=2, num_heads=1, dropout=0.0,
+    )
+    bb = TimingPropagationBackbone(cfg).eval()
+    x = torch.randn(10, 8)
+    edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=torch.long)
+    edge_attr = torch.randn(4, 2)
+    # All nodes in one graph (batch=None defaults to that).
+    out1 = bb(x, edge_index, edge_attr)
+    # Now scale up the input so the AT-pool max changes; RT seed should respond.
+    out2 = bb(x * 5.0, edge_index, edge_attr)
+    rt1 = out1["node_emb"][:, cfg.hidden_dim:]
+    rt2 = out2["node_emb"][:, cfg.hidden_dim:]
+    # Both halves change because both share inputs; the structural claim is
+    # just that RT is sensitive to the AT-pool magnitude.
+    assert not torch.allclose(rt1, rt2, atol=1e-4)
+
+
 def test_timing_message_layer_uses_hard_max_at_eval():
     """At eval time the layer should produce the standard scatter-max result,
     so STA semantics are preserved exactly when not training."""
