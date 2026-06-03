@@ -53,11 +53,18 @@ class NetSTAConfig:
     # Class-imbalance cap for the critical-path BCE pos_weight.
     critical_pos_weight_cap: float = 10.0
 
-    # Train-set summary stats baked into SlackHead so its forward returns
-    # predictions in absolute ns. Filled in by train.py from the train split;
-    # checkpoints round-trip them via the head's register_buffer slots.
+    # Train-set summary stats baked into each timing head so its forward
+    # returns predictions in absolute ns. Filled in by train.py from the train
+    # split; checkpoints round-trip them via the head's register_buffer slots.
+    # Slack stats are also used by the compositional SlackHead path (see
+    # NetSTAModel) which produces slack as the difference of standardized RT
+    # and AT predictions, scaled back to ns through these stats.
     slack_mean: float = 0.0
     slack_std: float = 1.0
+    arrival_time_mean: float = 0.0
+    arrival_time_std: float = 1.0
+    required_time_mean: float = 0.0
+    required_time_std: float = 1.0
 
     # Ablation flags. Defaults reproduce the original GATv2 architecture
     # exactly (so the existing ablation table still measures what it claims).

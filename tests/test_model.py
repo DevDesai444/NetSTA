@@ -6,10 +6,12 @@ import torch
 from netsta.config import NetSTAConfig
 from netsta.model import (
     AnalogPerformanceHead,
+    ArrivalTimeHead,
     CongestionHead,
     CriticalPathHead,
     DRCHead,
     NetSTAModel,
+    RequiredTimeHead,
     SlackHead,
 )
 
@@ -86,6 +88,89 @@ def test_analog_perf_head_two_output():
     assert pred.shape == (6, 2)
     loss = head.loss(pred, torch.rand(6, 2))
     assert torch.isfinite(loss) and loss >= 0
+
+
+def test_arrival_time_head_returns_predictions_in_ns():
+    """ArrivalTimeHead must return predictions in ns (target_mean +/- target_std
+    range when untrained) and standardize internally for the loss."""
+    head = ArrivalTimeHead(
+        in_dim=32, dropout=0.0,
+        arrival_time_mean=0.15, arrival_time_std=0.05,
+    )
+    emb = torch.randn(20, 32)
+    pred = head(emb)
+    assert pred.shape == (20,)
+    # Untrained predictions should be centered near the mean (z * std + mean
+    # for z roughly zero-mean).
+    assert abs(pred.mean().item() - 0.15) < 0.1
+    target = torch.rand(20) * 0.3
+    loss = head.loss(pred, target)
+    assert torch.isfinite(loss) and loss >= 0
+
+
+def test_required_time_head_slices_directional_embedding():
+    """When the directional timing backbone provides a [AT, RT] concatenation,
+    RequiredTimeHead's slice_offset/slice_dim selects only the RT half."""
+    head = RequiredTimeHead(
+        in_dim=64, dropout=0.0,
+        required_time_mean=0.20, required_time_std=0.04,
+        slice_offset=32, slice_dim=32,  # second half of a 64-d embedding
+    )
+    emb = torch.randn(10, 64)
+    pred = head(emb)
+    assert pred.shape == (10,)
+    assert head.slice_offset == 32 and head.slice_dim == 32
+    # First-half perturbations should NOT change RT predictions (the head
+    # never sees them).
+    emb_perturbed = emb.clone()
+    emb_perturbed[:, :32] += 100.0
+    pred_perturbed = head(emb_perturbed)
+    assert torch.allclose(pred, pred_perturbed, atol=1e-5)
+
+
+def test_slack_head_compositional_path_subtracts_at_from_rt():
+    """When compositional=True and AT/RT heads are attached, SlackHead
+    returns RT_pred - AT_pred mechanically — no learnable slack-specific
+    layer is consulted at forward time."""
+    at = ArrivalTimeHead(in_dim=32, dropout=0.0, arrival_time_mean=0.10, arrival_time_std=0.05)
+    rt = RequiredTimeHead(in_dim=32, dropout=0.0, required_time_mean=0.30, required_time_std=0.05)
+    slack = SlackHead(
+        in_dim=32, hidden=16, dropout=0.0,
+        slack_mean=0.20, slack_std=0.05, compositional=True,
+    )
+    slack.attach_components(at, rt)
+
+    emb = torch.randn(8, 32)
+    expected = rt(emb) - at(emb)
+    actual = slack(emb)
+    assert torch.allclose(actual, expected, atol=1e-6)
+
+
+def test_netsta_model_compositional_slack_when_at_rt_active():
+    """If active_tasks includes slack + arrival_time + required_time, the
+    SlackHead is wired compositionally end-to-end; slack predictions must
+    equal RT - AT from the corresponding heads on the same forward pass."""
+    from netsta.config import NetSTAConfig
+    from netsta.graph_builder import NODE_FEAT_DIM, EDGE_FEAT_DIM
+    cfg = NetSTAConfig(
+        node_feature_dim=NODE_FEAT_DIM,
+        edge_feature_dim=EDGE_FEAT_DIM,
+        hidden_dim=16, num_layers=3, num_heads=1, dropout=0.0,
+        active_tasks=("slack", "arrival_time", "required_time"),
+        task_weights={"slack": 1.0, "arrival_time": 0.3, "required_time": 0.3},
+        backbone_kind="timing",
+    )
+    model = NetSTAModel(cfg).eval()
+    assert isinstance(model.heads["slack"], SlackHead)
+    assert model.heads["slack"].compositional
+    from netsta.circuit_gen import generate_circuit
+    from netsta.graph_builder import circuit_to_pyg
+    from netsta.sta import run_sta
+    c = generate_circuit(num_inputs=3, num_gates=8, num_outputs=2, seed=1)
+    data = circuit_to_pyg(c, run_sta(c))
+    out = model(data.x, data.edge_index, edge_attr=data.edge_attr)
+    expected = out["required_time"] - out["arrival_time"]
+    assert torch.allclose(out["slack"], expected, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------

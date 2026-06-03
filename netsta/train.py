@@ -38,6 +38,8 @@ from .stats import DatasetStats, STATS_FILENAME
 
 TARGET_KEY = {
     "slack": "y_slack",
+    "arrival_time": "y_arrival_time",
+    "required_time": "y_required_time",
     "critical_path": "y_critical",
     "congestion": "y_congestion",
     "drc": "y_drc",
@@ -46,7 +48,8 @@ TARGET_KEY = {
 
 # Expands `--tasks all` to every task supported by the model registry.
 ALL_TASKS = (
-    "slack", "critical_path", "congestion", "drc", "analog_performance",
+    "slack", "arrival_time", "required_time",
+    "critical_path", "congestion", "drc", "analog_performance",
 )
 
 

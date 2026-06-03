@@ -381,17 +381,86 @@ def _mlp(in_dim: int, hidden: int, dropout: float) -> nn.Sequential:
     )
 
 
-class SlackHead(TaskHead):
-    """Per-node absolute-slack regression (ns).
+def _ns_head(in_dim: int, dropout: float) -> nn.Sequential:
+    """Single hidden-layer MLP -> 1 scalar, used by all ns regression heads.
 
-    The head returns predictions directly in nanoseconds. To keep training
-    well-conditioned when ns values are tiny (slack std is typically 0.05 -
-    0.15 ns), the loss standardizes both prediction and target by the
-    train-set slack std before computing MSE — equivalent to optimizing on
-    z-scores while keeping the forward API in physical units. The mean and
-    std are persisted on the head via register_buffer so checkpoints
-    round-trip them automatically and downstream callers (predict.py,
-    streamlit app) get ns out of the box.
+    Kept intentionally small: the goal is for the backbone to do the
+    representational work and for the head to be approximately a linear
+    readout. A tiny non-linearity helps fit the residual but does not
+    introduce capacity to absorb backbone mistakes.
+    """
+    return nn.Sequential(
+        nn.Linear(in_dim, in_dim),
+        nn.GELU(),
+        nn.Dropout(dropout),
+        nn.Linear(in_dim, 1),
+    )
+
+
+class _NsRegressionHead(TaskHead):
+    """Base class for the slack / arrival_time / required_time heads.
+
+    Each subclass sets `name` and the buffer names. The shared loss is
+    z-space MSE: divide pred and target by the train-set std before MSE so
+    optimization stays well-conditioned even when raw ns values are O(0.1).
+    Mean/std are register_buffer slots so checkpoints round-trip the scale
+    without the caller needing the stats file at inference time.
+
+    `slice_offset` and `slice_dim` let the head read a specific contiguous
+    slice of the backbone's per-node embedding. The TimingPropagationBackbone
+    concatenates [AT_emb, RT_emb] of width 2 * hidden; the AT and RT heads
+    use the corresponding half so they get architectural alignment with the
+    quantity they predict. Slack head uses the full vector.
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        dropout: float,
+        target_mean: float,
+        target_std: float,
+        slice_offset: int = 0,
+        slice_dim: int = 0,
+    ):
+        super().__init__()
+        self.slice_offset = int(slice_offset)
+        self.slice_dim = int(slice_dim) if slice_dim > 0 else int(in_dim)
+        self.head = _ns_head(self.slice_dim, dropout)
+        self.register_buffer("target_mean", torch.tensor(float(target_mean)))
+        self.register_buffer(
+            "target_std", torch.tensor(max(float(target_std), 1e-3))
+        )
+
+    def _slice(self, node_emb: torch.Tensor) -> torch.Tensor:
+        if self.slice_dim == node_emb.size(-1) and self.slice_offset == 0:
+            return node_emb
+        return node_emb[:, self.slice_offset : self.slice_offset + self.slice_dim]
+
+    def forward(self, node_emb, graph_emb=None, batch=None):
+        z = self.head(self._slice(node_emb)).squeeze(-1)
+        return z * self.target_std + self.target_mean
+
+    def loss(self, pred, target):
+        # Cancel the additive mean so the gradient is independent of it.
+        return F.mse_loss(pred / self.target_std, target / self.target_std)
+
+
+class SlackHead(_NsRegressionHead):
+    """Per-node slack regression in nanoseconds.
+
+    Two construction modes:
+
+    * Direct (default): a one-hidden-layer MLP regresses slack directly from
+      the full per-node embedding. Used with any backbone.
+
+    * Compositional: set `compositional=True` to derive slack as
+      RT_pred - AT_pred, with the RT and AT readouts each taking a clean
+      half of the directional backbone's [AT_emb, RT_emb] concatenation.
+      The head then has no learnable parameters of its own beyond what the
+      auxiliary AT/RT heads already learn — the STA identity is baked in
+      structurally and the slack prediction is mechanically consistent with
+      the AT and RT predictions. Recommended whenever the auxiliary AT/RT
+      heads are active.
     """
 
     name = "slack"
@@ -403,20 +472,100 @@ class SlackHead(TaskHead):
         dropout: float,
         slack_mean: float = 0.0,
         slack_std: float = 1.0,
+        compositional: bool = False,
     ):
-        super().__init__()
-        self.mlp = _mlp(in_dim, hidden, dropout)
-        self.register_buffer("slack_mean", torch.tensor(float(slack_mean)))
-        self.register_buffer("slack_std", torch.tensor(max(float(slack_std), 1e-3)))
+        super().__init__(
+            in_dim=in_dim, dropout=dropout,
+            target_mean=slack_mean, target_std=slack_std,
+        )
+        # Backwards-compat buffer aliases so older checkpoints expecting
+        # `slack_mean` / `slack_std` keys still load and so external tools
+        # (predict.py, app.py) can inspect the scale without depending on the
+        # base-class internals.
+        self.register_buffer("slack_mean", self.target_mean)
+        self.register_buffer("slack_std", self.target_std)
+        self.compositional = bool(compositional)
+        # The compositional path doesn't use self.head at inference; we keep
+        # it allocated for backwards compat with non-compositional checkpoints
+        # and for fallback when the AT/RT heads are not active.
+
+    def attach_components(
+        self,
+        at_head: "ArrivalTimeHead | None",
+        rt_head: "RequiredTimeHead | None",
+    ) -> None:
+        """Wire the AT and RT heads in for compositional inference.
+
+        Called by NetSTAModel after head construction so the slack head can
+        request RT - AT from heads that already exist in the ModuleDict
+        rather than carrying duplicate readouts.
+        """
+        self._at_head = at_head
+        self._rt_head = rt_head
 
     def forward(self, node_emb, graph_emb=None, batch=None):
-        # Predict in normalized z-space, then map back to ns for the caller.
-        z = self.mlp(node_emb).squeeze(-1)
-        return z * self.slack_std + self.slack_mean
+        if self.compositional and getattr(self, "_at_head", None) is not None \
+                and getattr(self, "_rt_head", None) is not None:
+            at_pred = self._at_head(node_emb, graph_emb, batch)
+            rt_pred = self._rt_head(node_emb, graph_emb, batch)
+            return rt_pred - at_pred
+        z = self.head(node_emb).squeeze(-1)
+        return z * self.target_std + self.target_mean
 
-    def loss(self, pred, target):
-        # Cancel the additive mean in the standardization for cleaner gradients.
-        return F.mse_loss(pred / self.slack_std, target / self.slack_std)
+
+class ArrivalTimeHead(_NsRegressionHead):
+    """Per-node arrival-time regression in ns.
+
+    With the directional timing backbone, the AT head reads only the AT half
+    of the per-node embedding ([0 : hidden]) so its readout is structurally
+    aligned with the forward-pass embedding. With other backbones the head
+    falls back to the full vector — `slice_dim = 0` selects the entire
+    embedding.
+    """
+
+    name = "arrival_time"
+
+    def __init__(
+        self,
+        in_dim: int,
+        dropout: float,
+        arrival_time_mean: float = 0.0,
+        arrival_time_std: float = 1.0,
+        slice_offset: int = 0,
+        slice_dim: int = 0,
+    ):
+        super().__init__(
+            in_dim=in_dim, dropout=dropout,
+            target_mean=arrival_time_mean, target_std=arrival_time_std,
+            slice_offset=slice_offset, slice_dim=slice_dim,
+        )
+
+
+class RequiredTimeHead(_NsRegressionHead):
+    """Per-node required-time regression in ns.
+
+    With the directional timing backbone, the RT head reads only the RT half
+    of the per-node embedding ([hidden : 2*hidden]) so its readout is
+    structurally aligned with the backward-pass embedding. With other
+    backbones the head falls back to the full vector.
+    """
+
+    name = "required_time"
+
+    def __init__(
+        self,
+        in_dim: int,
+        dropout: float,
+        required_time_mean: float = 0.0,
+        required_time_std: float = 1.0,
+        slice_offset: int = 0,
+        slice_dim: int = 0,
+    ):
+        super().__init__(
+            in_dim=in_dim, dropout=dropout,
+            target_mean=required_time_mean, target_std=required_time_std,
+            slice_offset=slice_offset, slice_dim=slice_dim,
+        )
 
 
 class CriticalPathHead(TaskHead):
@@ -521,11 +670,27 @@ class AnalogPerformanceHead(TaskHead):
 
 TASK_HEAD_REGISTRY = {
     SlackHead.name: SlackHead,
+    ArrivalTimeHead.name: ArrivalTimeHead,
+    RequiredTimeHead.name: RequiredTimeHead,
     CriticalPathHead.name: CriticalPathHead,
     CongestionHead.name: CongestionHead,
     DRCHead.name: DRCHead,
     AnalogPerformanceHead.name: AnalogPerformanceHead,
 }
+
+
+def _directional_slices(config: NetSTAConfig, in_dim: int):
+    """Return (at_offset, at_dim, rt_offset, rt_dim) for the AT/RT readouts.
+
+    The TimingPropagationBackbone concatenates [AT_emb, RT_emb] of width
+    2 * hidden_dim. Slicing per-head aligns the readout with the half of the
+    backbone that produced the corresponding quantity. Any other backbone has
+    no such structure, so the heads fall back to the full embedding.
+    """
+    if config.backbone_kind == "timing" and in_dim == 2 * config.hidden_dim:
+        h = config.hidden_dim
+        return (0, h, h, h)
+    return (0, in_dim, 0, in_dim)
 
 
 def _build_head(name: str, config: NetSTAConfig, in_dim: int) -> TaskHead:
@@ -537,9 +702,32 @@ def _build_head(name: str, config: NetSTAConfig, in_dim: int) -> TaskHead:
     if cls is CriticalPathHead:
         return cls(in_dim, config.hidden_dim, config.dropout, config.critical_pos_weight_cap)
     if cls is SlackHead:
+        # Compositional whenever AT + RT supervision is also active — that's
+        # the case in which RT_pred - AT_pred is well-defined and trained.
+        compositional = (
+            "arrival_time" in config.active_tasks
+            and "required_time" in config.active_tasks
+        )
         return cls(
             in_dim, config.hidden_dim, config.dropout,
             slack_mean=config.slack_mean, slack_std=config.slack_std,
+            compositional=compositional,
+        )
+    if cls is ArrivalTimeHead:
+        at_off, at_dim, _, _ = _directional_slices(config, in_dim)
+        return cls(
+            in_dim, config.dropout,
+            arrival_time_mean=config.arrival_time_mean,
+            arrival_time_std=config.arrival_time_std,
+            slice_offset=at_off, slice_dim=at_dim,
+        )
+    if cls is RequiredTimeHead:
+        _, _, rt_off, rt_dim = _directional_slices(config, in_dim)
+        return cls(
+            in_dim, config.dropout,
+            required_time_mean=config.required_time_mean,
+            required_time_std=config.required_time_std,
+            slice_offset=rt_off, slice_dim=rt_dim,
         )
     return cls(in_dim, config.hidden_dim, config.dropout)
 
@@ -583,6 +771,18 @@ class NetSTAModel(nn.Module):
             }
         )
         self.task_weights = dict(config.task_weights)
+
+        # The compositional SlackHead defers to the AT and RT heads at forward
+        # time; wire them in now that all heads are constructed. ModuleDict
+        # uses __contains__/__getitem__ semantics rather than dict.get.
+        slack = self.heads["slack"] if "slack" in self.heads else None
+        at = self.heads["arrival_time"] if "arrival_time" in self.heads else None
+        rt = self.heads["required_time"] if "required_time" in self.heads else None
+        if (
+            isinstance(slack, SlackHead) and slack.compositional
+            and at is not None and rt is not None
+        ):
+            slack.attach_components(at, rt)
 
     def forward(
         self,
