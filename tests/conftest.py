@@ -77,11 +77,17 @@ def small_dataset():
 
 @pytest.fixture
 def tiny_config():
-    """Fast-to-construct config used by every forward-pass test."""
+    """Fast-to-construct config used by every forward-pass test.
+
+    `node_feature_dim` is read from `graph_builder.NODE_FEAT_DIM` so this fixture
+    self-heals when the schema changes, instead of silently disagreeing with the
+    actual data.
+    """
     from netsta.config import NetSTAConfig
+    from netsta.graph_builder import NODE_FEAT_DIM, EDGE_FEAT_DIM
     return NetSTAConfig(
-        node_feature_dim=31,
-        edge_feature_dim=5,
+        node_feature_dim=NODE_FEAT_DIM,
+        edge_feature_dim=EDGE_FEAT_DIM,
         hidden_dim=32,
         num_layers=2,
         num_heads=2,

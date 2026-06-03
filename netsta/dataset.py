@@ -21,7 +21,9 @@ from .graph_builder import circuit_to_pyg
 
 
 # Bump when the on-disk PyG Data schema changes (e.g. new label field).
-DATA_SCHEMA_VERSION = 4
+# v5: drop logical_depth, load_cap, and 5 1-hop topology aggregates from
+# node features (31 -> 24 dims). Forces GNN to derive topology via MP.
+DATA_SCHEMA_VERSION = 5
 
 
 class NetSTAAugment:

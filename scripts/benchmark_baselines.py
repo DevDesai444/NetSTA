@@ -56,28 +56,42 @@ def fmt_pct(v):
 
 
 def hand_crafted_node_features(dataset, indices):
-    """Build per-node (features + graph-level summary) feature matrix.
+    """Per-node hand-engineered feature matrix for the sklearn baselines.
 
-    Per-node row = [original_node_features, graph_avg_depth, graph_max_fanout,
-                    graph_avg_load, graph_num_nodes].
-    Returns (X, y_slack, y_critical). Used by sklearn baselines.
+    Composes the model's input vector (identity/device one-hot only) with
+    hand-engineered per-node scalars the GNN must derive via message passing:
+    fanin, fanout, and graph-level summaries (node count, max fanout). The
+    sklearn baselines exist to answer "can a non-GNN match the GNN given
+    classical hand engineering?" — so we feed them exactly that.
+
+    Crucially, we do NOT include STA outputs (logical_depth, load_cap, slack-
+    derived quantities). That was the leakage path under the old schema.
+    Returns (X, y_slack, y_critical).
     """
-    X_chunks = []
-    y_slack = []
-    y_crit = []
+    X_chunks: list = []
+    y_slack: list = []
+    y_crit: list = []
     for idx in indices:
         data = dataset[idx]
         n = data.x.size(0)
         x_np = data.x.cpu().numpy()
-        # Last 4 cols of x_np are: depth_norm, load_cap_norm, fanout_norm, fanin_norm
-        graph_avg_depth = float(x_np[:, -4].mean())
-        graph_max_fanout = float(x_np[:, -2].max())
-        graph_avg_load = float(x_np[:, -3].mean())
+
+        # Per-node topology aggregates derived from the edge_index — the GNN
+        # would compute these via message passing; sklearn gets them precomputed.
+        edge_index = data.edge_index.cpu().numpy()
+        src, dst = edge_index[0], edge_index[1]
+        fanout = np.bincount(src, minlength=n).astype(np.float32)
+        fanin = np.bincount(dst, minlength=n).astype(np.float32)
+        per_node = np.stack([fanin, fanout], axis=1)
+
+        graph_max_fanout = float(fanout.max()) if fanout.size else 0.0
+        graph_avg_fanin = float(fanin.mean()) if fanin.size else 0.0
         graph_n = float(n)
-        extras = np.tile(
-            [graph_avg_depth, graph_max_fanout, graph_avg_load, graph_n], (n, 1)
-        )
-        X_chunks.append(np.concatenate([x_np, extras], axis=1))
+        graph_summary = np.tile(
+            [graph_max_fanout, graph_avg_fanin, graph_n], (n, 1)
+        ).astype(np.float32)
+
+        X_chunks.append(np.concatenate([x_np, per_node, graph_summary], axis=1))
         y_slack.append(data.y_slack.cpu().numpy())
         y_crit.append(data.y_critical.cpu().numpy())
     return (

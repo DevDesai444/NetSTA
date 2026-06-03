@@ -1,26 +1,31 @@
 """
 Build PyG Data tensors from Circuits — unified digital + analog schema.
 
-Node features (31 dims):
+Node features (24 dims) — topology-free identity only:
   [0 : NUM_GATE_TYPES+2]              digital gate-type one-hot (PI/PO/funcs)
-  [13]                                digital logical_depth (norm)
-  [14]                                digital load_cap (norm)
-  [15..19]                            shared scalars
-                                        fanout, fanin, pin_density,
-                                        net_degree, bbox_area
-  [20 : 20 + NUM_DEVICE_TYPES]        analog device-type one-hot
+  [13 : 13 + NUM_DEVICE_TYPES]        analog device-type one-hot
                                         (NMOS, PMOS, R, C, CURRENT_MIRROR, DIFF_PAIR)
-  [26]                                W_over_L (analog)
-  [27]                                operating_region (analog;
+  [19]                                W_over_L (analog)
+  [20]                                operating_region (analog;
                                         sat=1, triode=0, off=-1)
-  [28]                                symmetry_group_norm (analog;
+  [21]                                symmetry_group_norm (analog;
                                         normalized group id, 0 if unmatched)
-  [29..30]                            [is_digital, is_analog]
+  [22..23]                            [is_digital, is_analog]
+
+We deliberately do NOT include logical_depth or load_cap — those are STA
+outputs, so feeding them in as inputs short-circuits the regression. We also
+do NOT include precomputed 1-hop aggregates (fanout count, pin density,
+net degree, mean bbox area) — those are quantities message passing should
+*derive* from the graph; baking them into node features hides the work the
+GNN is supposed to do, which is why the MLP baseline matched the GNN under
+the old schema.
+
+Topology and placement signal reach the model via the edge features:
 
 Edge features (5 dims):
   [0] wire_delay_norm
   [1] manhattan_distance_norm
-  [2] net_fanout_norm
+  [2] net_fanout_norm                  (per-edge, derived from the driving net)
   [3] coupling_capacitance_norm        (analog only; digital=0)
   [4] matching_constraint              (analog only; 1 if endpoints share
                                         symmetry_group, else 0; digital=0)
@@ -52,29 +57,11 @@ from .nangate45 import (
 GATE_TYPE_DIM = NUM_GATE_TYPES + 2     # +PI +PO
 PI_IDX = NUM_GATE_TYPES
 PO_IDX = NUM_GATE_TYPES + 1
-# Total node feature dim: gate-type(13) + 7 shared scalars + analog(9) + type-flags(2)
-NODE_FEAT_DIM = GATE_TYPE_DIM + 7 + (NUM_DEVICE_TYPES + 3) + 2
+# Total node feature dim: gate-type(13) + analog(9) + type-flags(2) = 24
+# No precomputed STA outputs or 1-hop aggregates — message passing derives those.
+ANALOG_BLOCK_DIM = NUM_DEVICE_TYPES + 3  # device-type one-hot + (W/L, op_region, sym)
+NODE_FEAT_DIM = GATE_TYPE_DIM + ANALOG_BLOCK_DIM + 2
 EDGE_FEAT_DIM = 5
-
-
-def _net_bbox_area(net, positions):
-    pins = [net.driver] + list(net.sinks)
-    coords = [positions[p] for p in pins if p in positions]
-    if len(coords) < 2:
-        return 1.0
-    xs = [c[0] for c in coords]
-    ys = [c[1] for c in coords]
-    return float((max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1))
-
-
-def _node_to_nets(node, circuit):
-    nets = []
-    if node.output_net and node.output_net in circuit.nets:
-        nets.append(circuit.nets[node.output_net])
-    for nname in node.input_nets:
-        if nname in circuit.nets:
-            nets.append(circuit.nets[nname])
-    return nets
 
 
 def _max_pos(vals, default=1.0):
@@ -102,38 +89,14 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
     analog_params = circuit.analog_params or {}
     symmetry_groups = circuit.symmetry_groups or {}
 
-    # ----- Raw scalar collection (for normalization).
-    raw_depths = []
-    raw_load_caps = []
-    raw_fanouts = []
-    raw_fanins = []
-    raw_pin_density = []
-    raw_net_degree = []
-    raw_bbox_area = []
+    # ----- Raw scalar collection.
+    # Only analog device W/L survives here; topology aggregates and STA-internal
+    # quantities (depth, load_cap) are intentionally excluded — see module
+    # docstring.
     raw_wl = []  # W/L for analog MOS only
 
     for nid in node_order:
         node = circuit.nodes[nid]
-        timing = node_timing.get(nid, {})
-
-        raw_depths.append(timing.get("logical_depth", 0))
-        raw_load_caps.append(timing.get("load_cap", 0.0))
-
-        if node.output_net and node.output_net in circuit.nets:
-            raw_fanouts.append(len(circuit.nets[node.output_net].sinks))
-        else:
-            raw_fanouts.append(0)
-        raw_fanins.append(len(node.input_nets))
-
-        incident = _node_to_nets(node, circuit)
-        total_pins = sum(1 + len(n.sinks) for n in incident)
-        raw_pin_density.append(total_pins)
-        raw_net_degree.append(total_pins / len(incident) if incident else 0.0)
-        raw_bbox_area.append(
-            sum(_net_bbox_area(n, positions) for n in incident) / len(incident)
-            if incident else 0.0
-        )
-
         if is_analog and node.node_type in ("NMOS", "PMOS"):
             p = analog_params.get(nid, {})
             W = p.get("W") or 1e-6
@@ -142,18 +105,12 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
         else:
             raw_wl.append(0.0)
 
-    max_depth = _max_pos(raw_depths, 1.0)
-    max_load = _max_pos(raw_load_caps, 1e-6)
-    max_fanout = _max_pos(raw_fanouts, 1.0)
-    max_fanin = _max_pos(raw_fanins, 1.0)
-    max_pin_density = _max_pos(raw_pin_density, 1.0)
-    max_net_degree = _max_pos(raw_net_degree, 1.0)
-    max_bbox_area = _max_pos(raw_bbox_area, 1.0)
     max_wl = _max_pos(raw_wl, 1.0)
     max_group = _max_pos(symmetry_groups.values(), 1.0) if symmetry_groups else 1.0
 
     # ----- Per-node feature tensor.
     x = torch.zeros(num_nodes, NODE_FEAT_DIM)
+    analog_base = GATE_TYPE_DIM  # analog block starts immediately after gate-type one-hot
 
     for i, nid in enumerate(node_order):
         node = circuit.nodes[nid]
@@ -168,19 +125,7 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
             func = NANGATE45_CELLS[node.node_type]["function"]
             x[i, GATE_TYPE_TO_IDX[func]] = 1.0
 
-        # Digital scalars (zeros for analog; analog STA leaves logical_depth=0
-        # and load_cap=0 which is correct).
-        x[i, GATE_TYPE_DIM + 0] = raw_depths[i] / max_depth
-        x[i, GATE_TYPE_DIM + 1] = raw_load_caps[i] / max_load
-        # Shared scalars.
-        x[i, GATE_TYPE_DIM + 2] = raw_fanouts[i] / max_fanout
-        x[i, GATE_TYPE_DIM + 3] = raw_fanins[i] / max_fanin
-        x[i, GATE_TYPE_DIM + 4] = raw_pin_density[i] / max_pin_density
-        x[i, GATE_TYPE_DIM + 5] = raw_net_degree[i] / max_net_degree
-        x[i, GATE_TYPE_DIM + 6] = raw_bbox_area[i] / max_bbox_area
-
         # Analog device features (zeros for digital).
-        analog_base = GATE_TYPE_DIM + 7  # =20
         if is_analog and node.node_type in DEVICE_TO_IDX:
             x[i, analog_base + DEVICE_TO_IDX[node.node_type]] = 1.0
             # W/L
@@ -327,8 +272,6 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
     )
 
     data.max_slack = float(max_slack)
-    data.max_depth = float(max_depth)
-    data.max_load = float(max_load)
     data.is_analog = bool(is_analog)
     data.clock_period = sta_results.get("clock_period_ns", 0.0)
     data.circuit_name = circuit.name

@@ -37,14 +37,20 @@ from netsta.evaluate import classification_metrics, regression_metrics
 from netsta.train import _select_device
 
 
-# Last 4 cols of node features are (depth, load_cap, fanout, fanin). The
-# preceding NUM_GATE_TYPES+2 cols are the gate-type one-hot. See graph_builder.
+# Node feature layout (see netsta/graph_builder.py):
+#   [0 : GATE_TYPE_DIM]                gate-type one-hot incl. PI/PO  (13 dims)
+#   [GATE_TYPE_DIM : analog_end]       analog device-type + W/L + op_region + sym
+#   [last two cols]                    [is_digital, is_analog]
+# The `analog_device` ablation zeros every dim from GATE_TYPE_DIM onward
+# (analog block + circuit-type flags). On a pure-digital dataset that block is
+# all zero anyway, so this ablation only bites for mixed/analog runs.
 def _make_feature_mask(node_feature_dim: int, drop: str):
+    from netsta.graph_builder import GATE_TYPE_DIM
     mask = torch.ones(node_feature_dim)
     if drop == "gate_type":
-        mask[: node_feature_dim - 4] = 0.0  # zero everything except the 4 scalars
-    elif drop == "load_cap":
-        mask[node_feature_dim - 3] = 0.0  # load_cap is the 2nd-to-last of the 4 scalars: index -3
+        mask[:GATE_TYPE_DIM] = 0.0
+    elif drop == "analog_device":
+        mask[GATE_TYPE_DIM:] = 0.0
     return mask
 
 
@@ -77,7 +83,6 @@ ABLATIONS = [
     ("2 layers", {"num_layers": 2}),
     ("6 layers", {"num_layers": 6}),
     ("No gate type features", {"drop_feat": "gate_type"}),
-    ("No load capacitance", {"drop_feat": "load_cap"}),
     ("Single task (slack only)", {"tasks": ("slack",)}),
 ]
 

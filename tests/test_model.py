@@ -20,7 +20,7 @@ from netsta.model import (
 
 
 def test_config_defaults_match_documented_values():
-    cfg = NetSTAConfig(node_feature_dim=31)
+    cfg = NetSTAConfig(node_feature_dim=24)
     assert cfg.hidden_dim == 64
     assert cfg.num_layers == 4
     assert cfg.num_heads == 4
@@ -37,7 +37,7 @@ def test_config_validate_rejects_zero_node_dim():
 def test_config_validate_rejects_missing_task_weight():
     with pytest.raises(ValueError):
         NetSTAConfig(
-            node_feature_dim=31,
+            node_feature_dim=24,
             active_tasks=("slack", "drc"),
             task_weights={"slack": 0.5},
         ).validate()
