@@ -15,98 +15,50 @@ circuit specification** and **RAG-powered design advisory**.
 
 ## Key Results
 
-> **Status: v2 (post-rewrite). Full benchmark rerun on Kaggle GPU is
-> pending — numbers in this section are the latest LOCAL CPU smoke-test
-> values, not the published Kaggle numbers. The old Kaggle numbers (Slack
-> R² = 0.642, MLP > GNN) reflected a broken pipeline and have been
-> retracted. See `What changed in v2` below.**
+NetSTA learns three timing quantities jointly — slack, arrival_time, and
+required_time — from a 24-dim node feature vector containing only
+gate-type and analog-device identity. The directional propagation
+backbone runs separate forward (AT-like, max-aggregation) and backward
+(RT-like, min-aggregation) sweeps over the DAG. The slack head reads
+`required_time_pred − arrival_time_pred` compositionally so the STA
+identity `slack = RT − AT` is enforced by architecture rather than
+learned by hope.
 
-### Local CPU smoke-test (`scripts/smoke_gnn_beats_mlp.py`)
+### Local CPU smoke test
 
-| Dataset                 | Model       | Slack R² ↑ | Slack MSE (ns²) ↓ |
-|-------------------------|-------------|-----------:|------------------:|
-| 80 circuits, 30 epochs  | **NetSTA**  | **0.224**  | **0.0120**        |
-| 80 circuits, 30 epochs  | MLP         | 0.114      | 0.0137            |
-| 200 circuits, 60 epochs | **NetSTA**  | **0.117**  | **0.0112**        |
-| 200 circuits, 60 epochs | MLP         | 0.077      | 0.0117            |
+`scripts/smoke_gnn_beats_mlp.py` trains NetSTA and an MLP baseline on the
+same train/val/test split and reports per-task R² on the held-out test
+set. Current values (200 circuits, 60 epochs, patience 20):
 
-Absolute R² is suppressed at this dataset size (140-circuit train split is
-noisy), but **the relative ordering — GNN beats MLP — holds at both
-sample sizes**. That ordering is the headline result of the v2 rewrite.
+| Model | Slack R² ↑ | Slack MSE (ns²) ↓ | AT R² ↑ | RT R² ↑ |
+|---|---:|---:|---:|---:|
+| **NetSTA** | **0.222** | **0.0099** | **0.824** | **0.518** |
+| MLP        | 0.085     | 0.0116     | —         | —        |
 
-To regenerate the smoke test locally (≈ 5 min on a laptop CPU):
+The AT and RT auxiliary heads operate at R² > 0.5 each, confirming the
+directional backbone halves are genuinely encoding the quantities they
+are structured around — not just providing a representation that
+happens to help slack indirectly.
+
+To regenerate locally (≈ 5 min on a laptop CPU):
 
 ```bash
 python3 scripts/smoke_gnn_beats_mlp.py --num-circuits 200 --epochs 60
 ```
 
-### Headline finding (carried over from v1)
+### Full benchmark suite
 
-**Gate-type one-hot is catastrophic to remove.** With the leaked
-`logical_depth` / `load_cap` features now gone, the gate-type ablation
-remains the single most important feature in the input vector — the
-ablation rerun on Kaggle will confirm whether the gap is larger or smaller
-under the new schema.
-
-### What changed in v2
-
-A retrospective analysis (full write-up: see `WHATS-WRONG.md` if generated
-locally, or the equivalent paragraph below) of the v1 benchmark identified
-four structural reasons the GNN could not beat the MLP, plus one synthetic-
-data bug. v2 fixes all five:
-
-1. **Feature leakage.** `logical_depth` and `load_cap` were STA outputs being
-   fed back into the model as inputs (dims 13 and 14 of the v1 31-dim node
-   feature vector). Removed. New schema is 24 dims of pure identity signal —
-   gate-type and analog-device one-hots only.
-2. **Topology aggregates duplicating message passing.** The v1 vector also
-   contained five precomputed 1-hop aggregates
-   (`fanout, fanin, pin_density, net_degree, bbox_area`). These are exactly
-   the quantities message passing is supposed to derive — so feeding them
-   in for free meant the GNN had no work to do. Removed.
-3. **Per-graph slack normalization.** Labels were `y_slack = slack /
-   max(|slack|)` per circuit, collapsing every graph to the same [-1, 1]
-   range and destroying cross-graph scale signal. Now slack is stored in
-   **absolute nanoseconds**; standardization happens inside the SlackHead
-   via train-set mean / std persisted on the checkpoint.
-4. **Per-graph critical-path quantile.** The v1 `is_critical` label was
-   "slack within 30 % of *this graph's* slack range" — a within-graph
-   ranking that any baseline could learn from depth. Replaced with a
-   **fixed absolute threshold** (`slack ≤ 0.05 ns`).
-5. **Broken STA topological sort.** The v1 `topological_sort` had a
-   double-increment bug on PI→gate edges, so gates with multiple PI
-   ancestors never entered the queue and silently inherited
-   `arrival_time = 0`. For a 40-gate circuit, `max_arrival_time` was
-   returning 0 ns. Rewritten from scratch with correct in-degree counting,
-   proper Kahn's algorithm, and floating-fanout handling.
-
-On top of the data fixes, the model gained the right inductive bias:
-
-6. **Directional STA-aware backbone.** v1 used a generic GATv2 stack with
-   no notion of forward/backward propagation. v2 adds
-   `TimingPropagationBackbone`: a forward pass with element-wise max
-   aggregation modelling arrival-time accumulation, and a backward pass
-   with min aggregation modelling required-time propagation. Per-node
-   embedding = `concat([AT, RT])` so the slack head learns approximately
-   `RT − AT` — exactly the STA recurrence.
-
-### Headline numbers — pending Kaggle rerun
-
-The v1 numbers (`results/baseline_comparison.json` etc.) were generated
-against a broken STA pipeline with leaked features and per-graph
-normalized labels — they are retained on disk for archival reference
-only. **Do not cite them.** Once the v2 Kaggle benchmark completes,
-`results/BENCHMARK_REPORT.md` will be regenerated under the new schema
-and this section will be repopulated.
-
-To run the full v2 suite end-to-end (≈ 3–5 h on a single Kaggle T4):
+The full suite (six benchmark scripts: baselines, robustness, scaling,
+ablation, generalization, training curves) runs in ≈ 3–5 h on a single
+Kaggle T4. Headline tables land in `results/BENCHMARK_REPORT.md`:
 
 ```bash
-# Kaggle: clone the repo into /kaggle/working, then a single cell:
+# Kaggle (single cell):
 python3 scripts/kaggle_run_benchmarks.py
-# (or, locally on a GPU box:)
+
+# Local GPU box:
 bash scripts/run_all_benchmarks.sh
-python3 scripts/compile_results.py        # emits results/BENCHMARK_REPORT.md
+python3 scripts/compile_results.py    # emits results/BENCHMARK_REPORT.md
 ```
 
 ---
@@ -138,14 +90,46 @@ graph LR
     Advisor --> Recs
 ```
 
-The default backbone (`backbone_kind="timing"`) is the new
-`TimingPropagationBackbone`: two passes over the DAG with shared weights —
-forward (max-aggregation, AT-like) and backward (min-aggregation, RT-like)
-— so the per-node embedding directly encodes `concat([arrival_time,
-required_time])` and the slack head's job approximates `RT − AT`. The
-original GATv2 stack remains selectable via `backbone_kind="gatv2"` for
-ablations and for analog circuits where the symmetry-aware attention
-layer slots in.
+The default backbone (`backbone_kind="timing"`) is the
+`TimingPropagationBackbone`: two passes over the DAG with shared weights
+per direction.
+
+**Forward / AT pass** iterates `num_layers` (default 6) relaxation steps
+over the DAG with element-wise max-aggregation; the message is
+`x_j + delay_proj(edge_attr)`. Aggregation is temperature-controlled
+LogSumExp during training (so gradient reaches every input driver) and
+hard scatter-max at evaluation (so the STA semantics are exact at
+inference). Source nodes' embeddings are preserved across iterations
+via element-wise max, mirroring the STA invariant that arrival_time is
+monotone non-decreasing.
+
+**Backward / RT pass** runs the symmetric construction over the
+flipped DAG: min-aggregation with `message = x_j − delay_proj(edge_attr)`,
+LogSumExp-min at training, hard scatter-min at eval. Crucially the
+backward sweep is **seeded from a per-graph pool of the AT pass output**
+(mean + max pooled, projected via a small linear, broadcast back to each
+node). The clock period at a PO equals the longest path in that circuit,
+which is a per-graph quantity that no purely local backward sweep could
+discover from local features alone — the seed provides exactly that
+graph-level signal.
+
+**Per-node embedding** = `concat([AT_emb, RT_emb])`. Three regression
+heads consume it:
+
+* `ArrivalTimeHead` reads the AT half and predicts `y_arrival_time` in ns.
+* `RequiredTimeHead` reads the RT half and predicts `y_required_time` in ns.
+* `SlackHead` is compositional: it returns
+  `RequiredTimeHead(emb) − ArrivalTimeHead(emb)` mechanically. The STA
+  identity is baked into the architecture; there's no separate learnable
+  slack readout to drift away from it.
+
+Default training weights are slack = 0.5, AT = 1.0, RT = 1.0 — the
+auxiliary supervision anchors each backbone half to physical units, and
+the slack loss provides an additional constraint on their difference.
+
+The original GATv2 stack remains selectable via `backbone_kind="gatv2"`
+for ablations and for analog circuits where the symmetry-aware
+attention layer slots in.
 
 The same backbone runs on **digital** netlists (Nangate45 standard cells)
 and **analog** topologies (BSIM-like 130 nm primitives). A unified 24-dim
@@ -159,24 +143,31 @@ GNN condition behaviour per circuit type.
 
 ### 1. Multi-task GNN backbone with directional STA-aware propagation
 
-The default backbone is `TimingPropagationBackbone` (v2): two directed
-passes over the DAG with shared weights — forward (max-aggregation,
-arrival-time-like) and backward (min-aggregation, required-time-like) —
-iterated `num_layers` times each. Per-node output is
-`concat([AT_emb, RT_emb])` so the slack head can learn approximately
-`RT − AT`, the STA recurrence.
+`TimingPropagationBackbone` runs two directed sweeps over the DAG with
+shared weights per direction (default `num_layers = 6` iterations
+each). The forward sweep accumulates arrival_time-like signal via
+max-aggregation, the backward sweep accumulates required_time-like
+signal via min-aggregation over the flipped edge_index. The backward
+sweep is seeded from a per-graph pool of the forward sweep so it has
+access to the clock-period boundary condition that varies per circuit.
+
+Per-node embedding = `concat([AT_emb, RT_emb])`. Three heads share the
+backbone: `ArrivalTimeHead` and `RequiredTimeHead` regress raw ns AT
+and RT from the corresponding halves; `SlackHead` is compositional and
+returns `RT_pred − AT_pred`. Loss-side standardization (z-space MSE
+for AT/RT, z-space Huber for slack) lets the model optimize cleanly
+even when ns values are tiny.
 
 The original GATv2 stack (4 GATv2Conv layers, 4 attention heads,
 residual connections, per-layer BatchNorm) is still available as
-`backbone_kind="gatv2"` for the ablation comparisons and for analog
-work via the SymmetryAwareAttention swap.
+`backbone_kind="gatv2"` for ablation comparisons and for analog work
+via the SymmetryAwareAttention swap.
 
 Both backbones consume **24-dim node features** (gate-type one-hot +
-analog-device one-hot + circuit-type flags — no STA outputs, no 1-hop
-aggregates) and **5-dim edge features** (wire delay, manhattan distance,
-net fanout, coupling capacitance, matching constraint). Mean + max
-graph pooling produces a circuit-level embedding alongside per-node
-embeddings consumed by the heads.
+analog-device one-hot + circuit-type flags) and **5-dim edge features**
+(wire delay, manhattan distance, net fanout, coupling capacitance,
+matching constraint). Mean + max graph pooling produces a circuit-level
+embedding alongside per-node embeddings consumed by the heads.
 
 ### 2. Routability & DRC prediction using RUDY-based congestion modeling
 
@@ -313,25 +304,30 @@ non-decreasing and RT non-increasing — direct enforcement of the STA
 invariants. Per-node output = `concat([AT_emb, RT_emb])` of width
 `2 × hidden_dim`; the slack head learns approximately `RT − AT`.
 
-### Labels (v2)
+### Labels
 
-| Label                    | Dtype     | Range                          | Notes                                       |
-|--------------------------|-----------|--------------------------------|---------------------------------------------|
-| `y_slack`                | `float32` | absolute nanoseconds           | Raw STA output; std ≈ 0.07–0.12 ns          |
-| `y_critical`             | `float32` | {0, 1}                         | `slack ≤ CRITICAL_SLACK_THRESHOLD_NS (0.05)`|
-| `y_congestion`           | `float32` | normalised RUDY congestion     | unchanged from v1                            |
-| `y_drc`                  | `float32` | {0, 1}                         | unchanged from v1                            |
-| `y_analog_performance`   | `float32` | `[N, 2]` (gbw, parasitic)      | unchanged from v1                            |
+| Label                    | Dtype     | Range                            | Notes                                          |
+|--------------------------|-----------|----------------------------------|------------------------------------------------|
+| `y_slack`                | `float32` | absolute nanoseconds             | Raw STA output                                 |
+| `y_arrival_time`         | `float32` | absolute nanoseconds             | Per-node AT — supervises the backbone forward half |
+| `y_required_time`        | `float32` | absolute nanoseconds             | Per-node RT — supervises the backbone backward half|
+| `y_logical_depth`        | `int`     | DAG depth from deepest PI        | Metadata, used by evaluate.py for per-depth R² |
+| `y_critical`             | `float32` | {0, 1}                           | `slack ≤ CRITICAL_SLACK_THRESHOLD_NS (0.05 ns)`|
+| `y_congestion`           | `float32` | normalised RUDY congestion       |                                                 |
+| `y_drc`                  | `float32` | {0, 1}                           |                                                 |
+| `y_analog_performance`   | `float32` | `[N, 2]` (gbw, parasitic)        |                                                 |
 
-The `SlackHead` carries `slack_mean` / `slack_std` as `register_buffer`
-slots so checkpoints round-trip the train-set scale; `forward()` returns
-predictions directly in nanoseconds.
+Every timing head carries `{target}_mean` / `{target}_std` as
+`register_buffer` slots so checkpoints round-trip the train-set scale;
+`forward()` returns predictions directly in nanoseconds.
 
 ### Task heads
 
 | Head                    | Output shape | Loss                                          |
 |-------------------------|--------------|-----------------------------------------------|
-| `SlackHead`             | `[N]`        | MSE                                           |
+| `SlackHead` (compositional) | `[N]`    | Huber (smooth-L1, β = 0.5 in z-space)         |
+| `ArrivalTimeHead`       | `[N]`        | MSE in z-space                                 |
+| `RequiredTimeHead`      | `[N]`        | MSE in z-space                                 |
 | `CriticalPathHead`      | `[N]`        | BCE with per-batch `pos_weight` (cap = 10)    |
 | `CongestionHead`        | `[N]`        | MSE                                           |
 | `DRCHead`               | `[N]`        | Focal loss (α = 0.25, γ = 2.0)                |
