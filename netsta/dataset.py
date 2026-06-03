@@ -28,7 +28,10 @@ from .graph_builder import circuit_to_pyg
 #     y_critical now uses fixed CRITICAL_SLACK_THRESHOLD_NS, not a per-graph
 #     quantile. Also: STA propagation rewrite means slack values themselves
 #     change — caches MUST regenerate.
-DATA_SCHEMA_VERSION = 6
+# v7: emit y_arrival_time and y_required_time (raw ns) alongside y_slack so
+#     ArrivalTimeHead / RequiredTimeHead can supervise the backbone halves
+#     directly. y_logical_depth metadata added for per-depth R^2 stratification.
+DATA_SCHEMA_VERSION = 7
 
 
 class NetSTAAugment:

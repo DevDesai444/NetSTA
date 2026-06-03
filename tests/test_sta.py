@@ -118,6 +118,26 @@ def test_sta_actually_propagates_arrival_time_through_dag():
     assert spread > 0.01, f"slack collapsed to a point (spread={spread})"
 
 
+def test_graph_builder_emits_at_rt_labels_in_ns():
+    """y_arrival_time and y_required_time must mirror the STA's per-node
+    AT/RT values exactly (in ns), so the auxiliary heads can supervise them.
+    Slack must equal RT - AT at every node within float tolerance.
+    """
+    from netsta.graph_builder import circuit_to_pyg
+    c = generate_circuit(num_inputs=4, num_gates=12, num_outputs=2, seed=11)
+    sta = run_sta(c)
+    data = circuit_to_pyg(c, sta)
+
+    node_order = c.primary_inputs + c.gate_ids + c.primary_outputs
+    for i, nid in enumerate(node_order):
+        t = sta["node_timing"][nid]
+        assert abs(float(data.y_arrival_time[i]) - t["arrival_time"]) < 1e-6
+        assert abs(float(data.y_required_time[i]) - t["required_time"]) < 1e-6
+        # STA identity: slack = RT - AT, exactly.
+        assert abs(float(data.y_slack[i]) - (t["required_time"] - t["arrival_time"])) < 1e-6
+        assert int(data.y_logical_depth[i]) == t["logical_depth"]
+
+
 def test_critical_path_label_is_fixed_absolute_threshold():
     """The is_critical label must be `slack <= CRITICAL_SLACK_THRESHOLD_NS`,
     NOT a per-graph quantile. Two circuits with identical slack values must

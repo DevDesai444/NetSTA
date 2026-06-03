@@ -31,7 +31,16 @@ Edge features (5 dims):
                                         symmetry_group, else 0; digital=0)
 
 Labels:
-  y_slack, y_critical, y_congestion, y_drc           (digital tasks)
+  y_slack            per-node slack in ns (digital STA output)
+  y_arrival_time     per-node AT in ns (auxiliary supervision for the
+                     backbone's forward / AT half)
+  y_required_time    per-node RT in ns (auxiliary supervision for the
+                     backbone's backward / RT half)
+  y_logical_depth    per-node depth from the deepest PI; not a target,
+                     used by evaluate.py to stratify R^2 per depth
+  y_critical         binary, slack <= CRITICAL_SLACK_THRESHOLD_NS
+  y_congestion       per-node congestion (RUDY)
+  y_drc              binary DRC hotspot
   y_analog_performance: [N, 2] = (gbw_score, parasitic_impact)
 """
 
@@ -227,23 +236,36 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
         edge_attr = torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float)
 
     # ----- Labels.
-    # Slack is stored as raw nanoseconds, not per-graph normalized. Global
-    # mean/std for standardization are computed once over the train split and
-    # carried inside the SlackHead — see netsta.stats and netsta.model.SlackHead.
+    # All three timing labels (slack, arrival_time, required_time) are stored
+    # as raw nanoseconds. Per-task mean/std come from the train split via
+    # netsta.stats and are carried inside each head as register_buffer slots.
+    # The auxiliary arrival_time and required_time labels let the timing
+    # backbone's two halves be supervised directly on the quantities they are
+    # structured around, rather than via the indirect gradient from slack alone.
     if is_analog:
         # No digital STA — zero-fill so mixed-mode training can still batch.
         y_slack = torch.zeros(num_nodes, dtype=torch.float)
+        y_arrival_time = torch.zeros(num_nodes, dtype=torch.float)
+        y_required_time = torch.zeros(num_nodes, dtype=torch.float)
+        y_logical_depth = torch.zeros(num_nodes, dtype=torch.float)
         y_critical = torch.zeros(num_nodes, dtype=torch.float)
         y_drc = torch.tensor(
             [drc_map.get(nid, 0.0) for nid in node_order], dtype=torch.float
         )
-        # Analog performance: [N, 2] = (gbw_score, parasitic_impact).
         gbw_col = [node_timing.get(nid, {}).get("gbw_score", 0.0) for nid in node_order]
         par_col = [node_timing.get(nid, {}).get("parasitic_impact", 0.0) for nid in node_order]
         y_analog = torch.tensor(list(zip(gbw_col, par_col)), dtype=torch.float)
     else:
         slacks = [node_timing.get(nid, {}).get("slack", 0.0) for nid in node_order]
+        ats = [node_timing.get(nid, {}).get("arrival_time", 0.0) for nid in node_order]
+        rts = [node_timing.get(nid, {}).get("required_time", 0.0) for nid in node_order]
+        depths = [node_timing.get(nid, {}).get("logical_depth", 0) for nid in node_order]
         y_slack = torch.tensor(slacks, dtype=torch.float)
+        y_arrival_time = torch.tensor(ats, dtype=torch.float)
+        y_required_time = torch.tensor(rts, dtype=torch.float)
+        # y_logical_depth is metadata, not a training target — used by
+        # evaluate.py for per-depth R^2 stratification.
+        y_logical_depth = torch.tensor(depths, dtype=torch.float)
         y_critical = torch.tensor(
             [1.0 if node_timing.get(nid, {}).get("is_critical", False) else 0.0
              for nid in node_order],
@@ -252,7 +274,6 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
         y_drc = torch.tensor(
             [drc_map.get(nid, 0.0) for nid in node_order], dtype=torch.float
         )
-        # Analog targets zero-filled so mixed-mode batches concat cleanly.
         y_analog = torch.zeros((num_nodes, 2), dtype=torch.float)
 
     y_congestion = torch.tensor(
@@ -264,6 +285,9 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
         edge_index=edge_index,
         edge_attr=edge_attr,
         y_slack=y_slack,
+        y_arrival_time=y_arrival_time,
+        y_required_time=y_required_time,
+        y_logical_depth=y_logical_depth,
         y_critical=y_critical,
         y_congestion=y_congestion,
         y_drc=y_drc,
