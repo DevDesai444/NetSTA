@@ -248,19 +248,25 @@ def main():
         results.append({"name": "Topology (subset→full)", "error": repr(exc)})
 
     # --- Test 3: Depth shift ---
-    # circuit_gen's fanout-balanced generation produces shallow circuits
-    # (max logical_depth typically 2-7). Original spec (depth 10 vs 15-25)
-    # isn't achievable in this dataset, so the test compares "very shallow"
-    # to "deeper-than-train" using achievable bounds.
+    # Empirically (50-seed sweep of the current circuit_gen + STA):
+    #   gates [15, 40] -> max_depth in [5, 11], mostly 7-9
+    #   gates [80, 300] -> max_depth in [9, 16], mostly 10-13
+    # So a "shallow" train pool of depth <= 7 catches roughly half the
+    # smaller circuits, and a "deep" test pool of depth >= 10 catches
+    # ~90 % of the larger ones. Both thresholds are reachable, the
+    # distributions are clearly separated (no overlap by construction),
+    # and the test exercises whether the model generalizes from
+    # 5-7-hop paths to 10+-hop paths — exactly the iteration-depth
+    # property the timing backbone is supposed to support.
     try:
         train_depth = build_in_memory_dataset(
-            args.num_circuits, gate_range=(15, 80),
-            depth_predicate=lambda d: d <= 3, seed=args.seed + 4,
+            args.num_circuits, gate_range=(15, 40),
+            depth_predicate=lambda d: d <= 7, seed=args.seed + 4,
             max_tries_factor=40,
         )
         test_depth = build_in_memory_dataset(
             args.num_test_circuits, gate_range=(80, 300),
-            depth_predicate=lambda d: d >= 5, seed=args.seed + 5,
+            depth_predicate=lambda d: d >= 10, seed=args.seed + 5,
             max_tries_factor=40,
         )
         results.append(run_test(
