@@ -1,7 +1,7 @@
 """
 Build PyG Data tensors from Circuits — unified digital + analog schema.
 
-Node features (24 dims) — topology-free identity only:
+Node features (26 dims) — topology-free identity + library-known scalars:
   [0 : NUM_GATE_TYPES+2]              digital gate-type one-hot (PI/PO/funcs)
   [13 : 13 + NUM_DEVICE_TYPES]        analog device-type one-hot
                                         (NMOS, PMOS, R, C, CURRENT_MIRROR, DIFF_PAIR)
@@ -11,6 +11,18 @@ Node features (24 dims) — topology-free identity only:
   [21]                                symmetry_group_norm (analog;
                                         normalized group id, 0 if unmatched)
   [22..23]                            [is_digital, is_analog]
+  [24]                                intrinsic_delay_norm — known from the
+                                        Liberty cell entry, normalized by a
+                                        fixed reference. PI/PO/unknown = 0.
+                                        Used to be hidden behind the one-hot
+                                        index; making it explicit removes the
+                                        need for the model to learn the
+                                        gate_type -> intrinsic_delay table.
+  [25]                                clock_period_norm — graph-level scalar
+                                        broadcast to every node. RT's boundary
+                                        condition at the POs IS clock_period;
+                                        without it, the backward sweep has to
+                                        rediscover it from a pooled AT proxy.
 
 We deliberately do NOT include logical_depth or load_cap — those are STA
 outputs, so feeding them in as inputs short-circuits the regression. We also
@@ -23,12 +35,18 @@ the old schema.
 Topology and placement signal reach the model via the edge features:
 
 Edge features (5 dims):
-  [0] wire_delay_norm
-  [1] manhattan_distance_norm
+  [0] wire_delay_norm                  (ns / WIRE_DELAY_REF_NS)
+  [1] manhattan_distance_norm          (cells / MANHATTAN_REF_CELLS)
   [2] net_fanout_norm                  (per-edge, derived from the driving net)
   [3] coupling_capacitance_norm        (analog only; digital=0)
   [4] matching_constraint              (analog only; 1 if endpoints share
                                         symmetry_group, else 0; digital=0)
+
+Normalization is by FIXED dataset-wide reference constants (below) rather
+than per-graph max. Per-graph normalization meant "0.5" was a different
+absolute ns in every circuit, so the model could not learn the wire_delay ->
+slack contribution consistently across graphs — which is why ablating edge
+features barely moved the metric. Fixed constants preserve absolute scale.
 
 Labels:
   y_slack            per-node slack in ns (digital STA output)
@@ -66,11 +84,33 @@ from .nangate45 import (
 GATE_TYPE_DIM = NUM_GATE_TYPES + 2     # +PI +PO
 PI_IDX = NUM_GATE_TYPES
 PO_IDX = NUM_GATE_TYPES + 1
-# Total node feature dim: gate-type(13) + analog(9) + type-flags(2) = 24
+# Total node feature dim: gate-type(13) + analog(9) + type-flags(2) +
+# library-known scalars(intrinsic_delay, clock_period)(2) = 26.
 # No precomputed STA outputs or 1-hop aggregates — message passing derives those.
 ANALOG_BLOCK_DIM = NUM_DEVICE_TYPES + 3  # device-type one-hot + (W/L, op_region, sym)
-NODE_FEAT_DIM = GATE_TYPE_DIM + ANALOG_BLOCK_DIM + 2
+NODE_FEAT_DIM = GATE_TYPE_DIM + ANALOG_BLOCK_DIM + 2 + 2
 EDGE_FEAT_DIM = 5
+
+# ---------------------------------------------------------------------------
+# Fixed dataset-wide reference constants used to normalize the raw physical
+# quantities below into dimensionless features. These are NOT learned and
+# NOT per-graph — they're absolute scales picked to put the typical value
+# range near 1.0 across the Nangate45 + synthetic-DAG distribution we train
+# on. Keeping them fixed is what lets the model learn a consistent mapping
+# from edge_attr -> ns delay across all circuits in the dataset.
+#   wire_delay        ~ 0.001-0.05 ns  -> ref 0.1 ns
+#   manhattan_dist    ~ 1-30 cells     -> ref 30
+#   net_fanout        ~ 1-10           -> ref 10
+#   coupling_cap      ~ 0-1e-15 F      -> ref 1e-15 F
+#   intrinsic_delay   ~ 0.01-0.07 ns   -> ref 0.1 ns
+#   clock_period      ~ 0.3-5.0 ns     -> ref 2.0 ns
+# Picked once on the v7 dataset distribution and held constant since.
+WIRE_DELAY_REF_NS = 0.1
+MANHATTAN_REF_CELLS = 30.0
+FANOUT_REF = 10.0
+COUPLING_REF_F = 1e-15
+INTRINSIC_DELAY_REF_NS = 0.1
+CLOCK_PERIOD_REF_NS = 2.0
 
 
 def _max_pos(vals, default=1.0):
@@ -120,6 +160,17 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
     # ----- Per-node feature tensor.
     x = torch.zeros(num_nodes, NODE_FEAT_DIM)
     analog_base = GATE_TYPE_DIM  # analog block starts immediately after gate-type one-hot
+    # Library scalars + circuit-type flags sit at the tail; indices below.
+    INTRINSIC_DELAY_IDX = NODE_FEAT_DIM - 2  # set after type flags shift below
+    CLOCK_PERIOD_IDX = NODE_FEAT_DIM - 1
+    # Type-flag indices: just before the library scalars.
+    IS_DIGITAL_IDX = NODE_FEAT_DIM - 4
+    IS_ANALOG_IDX = NODE_FEAT_DIM - 3
+
+    # Graph-level clock period broadcast to every node (boundary condition for
+    # the RT pass; required-time at the POs IS this value).
+    clock_period_ns = float(sta_results.get("clock_period_ns", 0.0) or 0.0)
+    clock_period_norm = clock_period_ns / CLOCK_PERIOD_REF_NS
 
     for i, nid in enumerate(node_order):
         node = circuit.nodes[nid]
@@ -150,9 +201,19 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
             grp = symmetry_groups.get(nid, 0)
             x[i, analog_base + NUM_DEVICE_TYPES + 2] = grp / max_group
 
-        # Circuit-type indicator at the tail.
-        x[i, NODE_FEAT_DIM - 2] = 0.0 if is_analog else 1.0  # is_digital
-        x[i, NODE_FEAT_DIM - 1] = 1.0 if is_analog else 0.0  # is_analog
+        # Circuit-type indicator.
+        x[i, IS_DIGITAL_IDX] = 0.0 if is_analog else 1.0
+        x[i, IS_ANALOG_IDX] = 1.0 if is_analog else 0.0
+
+        # Intrinsic gate delay (library-known scalar). PIs/POs/analog -> 0.
+        intrinsic_ns = 0.0
+        if (not is_analog) and node.node_type in NANGATE45_CELLS:
+            intrinsic_ns = NANGATE45_CELLS[node.node_type]["intrinsic_delay"]
+        x[i, INTRINSIC_DELAY_IDX] = intrinsic_ns / INTRINSIC_DELAY_REF_NS
+
+        # Clock period (graph-level, broadcast). Same value on every node of
+        # the same circuit; the model uses it as RT's boundary value.
+        x[i, CLOCK_PERIOD_IDX] = clock_period_norm
 
     # ----- Edges.
     src_list, dst_list = [], []
@@ -213,17 +274,18 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
     edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
 
     if raw_wd:
-        max_wd = max(max(raw_wd), 1e-6)
-        max_md = max(max(raw_md), 1)
-        max_nf = max(max(raw_nf), 1)
-        max_coup = max(max(raw_coup), 1e-30)
+        # Fixed dataset-wide normalization — the previous per-graph max made
+        # "0.5 wire delay" mean a different absolute ns in every circuit, so
+        # the model never saw a consistent physical scale and ablating edge
+        # features did not move the metric. Constants are defined at module
+        # level and held fixed across the entire dataset.
         edge_attr = torch.tensor(
             [
                 [
-                    wd / max_wd,
-                    md / max_md,
-                    nf / max_nf,
-                    coup / max_coup,
+                    wd / WIRE_DELAY_REF_NS,
+                    md / MANHATTAN_REF_CELLS,
+                    nf / FANOUT_REF,
+                    coup / COUPLING_REF_F,
                     match,
                 ]
                 for wd, md, nf, coup, match in zip(

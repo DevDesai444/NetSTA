@@ -31,7 +31,13 @@ from .graph_builder import circuit_to_pyg
 # v7: emit y_arrival_time and y_required_time (raw ns) alongside y_slack so
 #     ArrivalTimeHead / RequiredTimeHead can supervise the backbone halves
 #     directly. y_logical_depth metadata added for per-depth R^2 stratification.
-DATA_SCHEMA_VERSION = 7
+# v8: node features 24 -> 26 (added intrinsic_delay_norm, clock_period_norm).
+#     Edge features stay at 5 dims but normalization switches from per-graph
+#     max to fixed dataset-wide reference constants (WIRE_DELAY_REF_NS etc.)
+#     so absolute physical scale is consistent across graphs. Caches MUST
+#     regenerate; old v7 caches load with the wrong feature dim and produce
+#     a runtime error at the model's input projection.
+DATA_SCHEMA_VERSION = 8
 
 
 class NetSTAAugment:
