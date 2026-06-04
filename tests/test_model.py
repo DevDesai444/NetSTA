@@ -22,11 +22,11 @@ from netsta.model import (
 
 
 def test_config_defaults_match_documented_values():
-    cfg = NetSTAConfig(node_feature_dim=26)
+    cfg = NetSTAConfig(node_feature_dim=17)
     assert cfg.hidden_dim == 64
-    # num_layers covers the typical p95 depth of the standard 1000-circuit
-    # train pool; train.resolve_num_layers adapts upward for deeper data.
-    assert cfg.num_layers == 8
+    # num_layers is set to the elbow from the ablation sweep (2->4->6->8
+    # gave R^2 0.614 -> 0.646 -> 0.496 -> 0.428 on the standard pool).
+    assert cfg.num_layers == 4
     assert cfg.num_heads == 4
     assert cfg.dropout == 0.1
     assert cfg.edge_feature_dim in (3, 5)  # tolerate older defaults

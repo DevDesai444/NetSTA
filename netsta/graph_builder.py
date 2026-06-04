@@ -1,28 +1,38 @@
 """
 Build PyG Data tensors from Circuits — unified digital + analog schema.
 
-Node features (26 dims) — topology-free identity + library-known scalars:
-  [0 : NUM_GATE_TYPES+2]              digital gate-type one-hot (PI/PO/funcs)
-  [13 : 13 + NUM_DEVICE_TYPES]        analog device-type one-hot
+Node features (15 dims) — Liberty scalars + identity flags:
+  [0]                                 is_pi          (1 if primary input)
+  [1]                                 is_po          (1 if primary output)
+  [2..10]                             analog block (9 dims; see below)
+  [11]                                is_digital
+  [12]                                is_analog
+  [13]                                intrinsic_delay_norm
+                                        (Liberty intrinsic_delay / 0.1 ns)
+  [14]                                input_cap_norm
+                                        (Liberty input_cap / 5.0 fF)
+  [15]                                output_res_norm
+                                        (Liberty output_res / 500 ohm)
+  [16]                                clock_period_norm
+                                        (graph-level clock_period / 2 ns,
+                                        broadcast to every node)
+
+The 13-dim gate-type one-hot was dropped at v9. The ablation showed that
+once intrinsic_delay is exposed as a scalar feature, the one-hot is
+redundant — removing it actually moved R^2 by +0.030. The two additional
+Liberty scalars (input_cap, output_res) carry the remaining cell-specific
+timing information that intrinsic_delay alone does not: the gate's
+contribution to downstream load and its own resistance scaling. Together
+with intrinsic_delay these three uniquely identify every Nangate45 cell
+the model will see, in 3 dense scalars instead of 13 sparse columns.
+
+Analog block (9 dims) at [2..10]:
+  [2 : 2 + NUM_DEVICE_TYPES]          analog device-type one-hot
                                         (NMOS, PMOS, R, C, CURRENT_MIRROR, DIFF_PAIR)
-  [19]                                W_over_L (analog)
-  [20]                                operating_region (analog;
-                                        sat=1, triode=0, off=-1)
-  [21]                                symmetry_group_norm (analog;
-                                        normalized group id, 0 if unmatched)
-  [22..23]                            [is_digital, is_analog]
-  [24]                                intrinsic_delay_norm — known from the
-                                        Liberty cell entry, normalized by a
-                                        fixed reference. PI/PO/unknown = 0.
-                                        Used to be hidden behind the one-hot
-                                        index; making it explicit removes the
-                                        need for the model to learn the
-                                        gate_type -> intrinsic_delay table.
-  [25]                                clock_period_norm — graph-level scalar
-                                        broadcast to every node. RT's boundary
-                                        condition at the POs IS clock_period;
-                                        without it, the backward sweep has to
-                                        rediscover it from a pooled AT proxy.
+  [8]                                 W_over_L (analog)
+  [9]                                 operating_region (sat=1, triode=0, off=-1)
+  [10]                                symmetry_group_norm
+                                        (analog group id, 0 if unmatched)
 
 We deliberately do NOT include logical_depth or load_cap — those are STA
 outputs, so feeding them in as inputs short-circuits the regression. We also
@@ -75,20 +85,20 @@ from .congestion import compute_rudy_congestion
 from .drc import compute_drc_labels
 from .nangate45 import (
     NANGATE45_CELLS,
-    GATE_TYPE_TO_IDX,
-    NUM_GATE_TYPES,
     compute_wire_delay,
 )
 
 
-GATE_TYPE_DIM = NUM_GATE_TYPES + 2     # +PI +PO
-PI_IDX = NUM_GATE_TYPES
-PO_IDX = NUM_GATE_TYPES + 1
-# Total node feature dim: gate-type(13) + analog(9) + type-flags(2) +
-# library-known scalars(intrinsic_delay, clock_period)(2) = 26.
+# Schema v9 layout:
+#   PI/PO flags (2) + analog block (9) + is_digital/is_analog (2)
+#   + Liberty scalars: intrinsic_delay, input_cap, output_res, clock_period (4)
+# Total: 2 + 9 + 2 + 4 = 17 dims.
 # No precomputed STA outputs or 1-hop aggregates — message passing derives those.
 ANALOG_BLOCK_DIM = NUM_DEVICE_TYPES + 3  # device-type one-hot + (W/L, op_region, sym)
-NODE_FEAT_DIM = GATE_TYPE_DIM + ANALOG_BLOCK_DIM + 2 + 2
+PI_PO_DIM = 2
+TYPE_FLAG_DIM = 2
+LIBERTY_SCALAR_DIM = 4  # intrinsic_delay, input_cap, output_res, clock_period
+NODE_FEAT_DIM = PI_PO_DIM + ANALOG_BLOCK_DIM + TYPE_FLAG_DIM + LIBERTY_SCALAR_DIM
 EDGE_FEAT_DIM = 5
 
 # ---------------------------------------------------------------------------
@@ -103,6 +113,8 @@ EDGE_FEAT_DIM = 5
 #   net_fanout        ~ 1-10           -> ref 10
 #   coupling_cap      ~ 0-1e-15 F      -> ref 1e-15 F
 #   intrinsic_delay   ~ 0.01-0.07 ns   -> ref 0.1 ns
+#   input_cap         ~ 0.5-5 fF       -> ref 5 fF
+#   output_res        ~ 100-500 ohm    -> ref 500 ohm
 #   clock_period      ~ 0.3-5.0 ns     -> ref 2.0 ns
 # Picked once on the v7 dataset distribution and held constant since.
 WIRE_DELAY_REF_NS = 0.1
@@ -110,6 +122,8 @@ MANHATTAN_REF_CELLS = 30.0
 FANOUT_REF = 10.0
 COUPLING_REF_F = 1e-15
 INTRINSIC_DELAY_REF_NS = 0.1
+INPUT_CAP_REF_FF = 5.0
+OUTPUT_RES_REF_OHM = 500.0
 CLOCK_PERIOD_REF_NS = 2.0
 
 
@@ -158,14 +172,19 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
     max_group = _max_pos(symmetry_groups.values(), 1.0) if symmetry_groups else 1.0
 
     # ----- Per-node feature tensor.
+    # Layout (15 dims): [is_pi, is_po, analog_block(9), is_digital, is_analog,
+    #                    intrinsic_delay, input_cap, output_res, clock_period]
     x = torch.zeros(num_nodes, NODE_FEAT_DIM)
-    analog_base = GATE_TYPE_DIM  # analog block starts immediately after gate-type one-hot
-    # Library scalars + circuit-type flags sit at the tail; indices below.
-    INTRINSIC_DELAY_IDX = NODE_FEAT_DIM - 2  # set after type flags shift below
-    CLOCK_PERIOD_IDX = NODE_FEAT_DIM - 1
-    # Type-flag indices: just before the library scalars.
-    IS_DIGITAL_IDX = NODE_FEAT_DIM - 4
-    IS_ANALOG_IDX = NODE_FEAT_DIM - 3
+    IS_PI_IDX = 0
+    IS_PO_IDX = 1
+    ANALOG_BASE = 2
+    IS_DIGITAL_IDX = ANALOG_BASE + ANALOG_BLOCK_DIM         # 11
+    IS_ANALOG_IDX = IS_DIGITAL_IDX + 1                      # 12
+    LIBERTY_BASE = IS_ANALOG_IDX + 1                        # 13
+    INTRINSIC_DELAY_IDX = LIBERTY_BASE + 0                  # 13
+    INPUT_CAP_IDX = LIBERTY_BASE + 1                        # 14
+    OUTPUT_RES_IDX = LIBERTY_BASE + 2                       # 15
+    CLOCK_PERIOD_IDX = LIBERTY_BASE + 3                     # 16
 
     # Graph-level clock period broadcast to every node (boundary condition for
     # the RT pass; required-time at the POs IS this value).
@@ -175,41 +194,40 @@ def circuit_to_pyg(circuit: Circuit, sta_results: dict) -> Data:
     for i, nid in enumerate(node_order):
         node = circuit.nodes[nid]
 
-        # Gate-type one-hot region (digital). PIs/POs are common to both;
-        # analog device nodes leave gate-type bits zero.
+        # PI / PO flags. Common to both digital and analog circuits — these
+        # are pseudo-pins, not cell instances.
         if node.node_type == "PI":
-            x[i, PI_IDX] = 1.0
+            x[i, IS_PI_IDX] = 1.0
         elif node.node_type == "PO":
-            x[i, PO_IDX] = 1.0
-        elif (not is_analog) and node.node_type in NANGATE45_CELLS:
-            func = NANGATE45_CELLS[node.node_type]["function"]
-            x[i, GATE_TYPE_TO_IDX[func]] = 1.0
+            x[i, IS_PO_IDX] = 1.0
 
         # Analog device features (zeros for digital).
         if is_analog and node.node_type in DEVICE_TO_IDX:
-            x[i, analog_base + DEVICE_TO_IDX[node.node_type]] = 1.0
+            x[i, ANALOG_BASE + DEVICE_TO_IDX[node.node_type]] = 1.0
             # W/L
-            x[i, analog_base + NUM_DEVICE_TYPES + 0] = raw_wl[i] / max_wl
+            x[i, ANALOG_BASE + NUM_DEVICE_TYPES + 0] = raw_wl[i] / max_wl
             # Operating region: assume saturation if MOS with bias, off otherwise.
             if node.node_type in ("NMOS", "PMOS"):
-                x[i, analog_base + NUM_DEVICE_TYPES + 1] = 1.0  # sat
+                x[i, ANALOG_BASE + NUM_DEVICE_TYPES + 1] = 1.0  # sat
             elif node.node_type in ("R", "C"):
-                x[i, analog_base + NUM_DEVICE_TYPES + 1] = 0.0  # passive
+                x[i, ANALOG_BASE + NUM_DEVICE_TYPES + 1] = 0.0  # passive
             else:
-                x[i, analog_base + NUM_DEVICE_TYPES + 1] = -1.0
+                x[i, ANALOG_BASE + NUM_DEVICE_TYPES + 1] = -1.0
             # Symmetry group (normalized).
             grp = symmetry_groups.get(nid, 0)
-            x[i, analog_base + NUM_DEVICE_TYPES + 2] = grp / max_group
+            x[i, ANALOG_BASE + NUM_DEVICE_TYPES + 2] = grp / max_group
 
         # Circuit-type indicator.
         x[i, IS_DIGITAL_IDX] = 0.0 if is_analog else 1.0
         x[i, IS_ANALOG_IDX] = 1.0 if is_analog else 0.0
 
-        # Intrinsic gate delay (library-known scalar). PIs/POs/analog -> 0.
-        intrinsic_ns = 0.0
+        # Liberty scalars for digital gates. PIs / POs / analog devices keep
+        # zero — the analog block carries the analog-equivalent information.
         if (not is_analog) and node.node_type in NANGATE45_CELLS:
-            intrinsic_ns = NANGATE45_CELLS[node.node_type]["intrinsic_delay"]
-        x[i, INTRINSIC_DELAY_IDX] = intrinsic_ns / INTRINSIC_DELAY_REF_NS
+            cell = NANGATE45_CELLS[node.node_type]
+            x[i, INTRINSIC_DELAY_IDX] = cell["intrinsic_delay"] / INTRINSIC_DELAY_REF_NS
+            x[i, INPUT_CAP_IDX] = cell["input_cap"] / INPUT_CAP_REF_FF
+            x[i, OUTPUT_RES_IDX] = cell["output_res"] / OUTPUT_RES_REF_OHM
 
         # Clock period (graph-level, broadcast). Same value on every node of
         # the same circuit; the model uses it as RT's boundary value.

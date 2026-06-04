@@ -37,7 +37,12 @@ from .graph_builder import circuit_to_pyg
 #     so absolute physical scale is consistent across graphs. Caches MUST
 #     regenerate; old v7 caches load with the wrong feature dim and produce
 #     a runtime error at the model's input projection.
-DATA_SCHEMA_VERSION = 8
+# v9: drop 13-dim gate-type one-hot (the "no gate type" ablation showed it
+#     was costing R^2 once intrinsic_delay was exposed as a scalar). Add
+#     input_cap and output_res Liberty scalars so the (intrinsic_delay,
+#     input_cap, output_res) triple uniquely identifies every Nangate45
+#     cell. Node features 26 -> 17. Caches MUST regenerate.
+DATA_SCHEMA_VERSION = 9
 
 
 class NetSTAAugment:
