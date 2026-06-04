@@ -247,14 +247,33 @@ class _TimingMessageLayer(MessagePassing):
         # registered kind only matters as a label.
         super().__init__(aggr=aggr_kind, node_dim=0)
         self.aggr_kind = aggr_kind
-        self.soft_temperature = float(soft_temperature)
+        # Stored as a buffer so an external trainer can call
+        # `model.backbone.set_soft_temperature(beta)` once per epoch to anneal
+        # the soft-aggregator's beta toward infinity (hard max) as training
+        # progresses. Keeping it as a Python float would lose the value when
+        # the backbone is moved across devices.
+        self.register_buffer(
+            "soft_temperature_buf",
+            torch.tensor(float(soft_temperature)),
+        )
         self.delay_proj = nn.Linear(edge_dim, hidden)
-        # Initialize the delay projection at a small scale so the first few
-        # iterations do not overwhelm the input projection's initial AT/RT
-        # estimate. Large initial deltas can otherwise saturate the
-        # accumulation in 1-2 iterations and starve later updates of gradient.
-        nn.init.normal_(self.delay_proj.weight, mean=0.0, std=0.02)
+        # Initialize the delay projection at a moderate scale. Earlier code
+        # used std=0.02 to avoid overwhelming the input projection, but that
+        # left per-iteration updates so small that even K=6 sweeps barely
+        # moved the embedding off the input. With explicit intrinsic_delay
+        # and clock_period node features now in play, the input already
+        # carries the right magnitude — the delay update no longer needs to
+        # be conservatively tiny. std=0.1 gives the recurrence room to
+        # actually propagate ns-scale signal across the DAG.
+        nn.init.normal_(self.delay_proj.weight, mean=0.0, std=0.1)
         nn.init.zeros_(self.delay_proj.bias)
+
+    @property
+    def soft_temperature(self) -> float:
+        return float(self.soft_temperature_buf.item())
+
+    def set_soft_temperature(self, beta: float) -> None:
+        self.soft_temperature_buf.fill_(float(beta))
 
     def forward(self, x, edge_index, edge_attr):
         if edge_index.numel() == 0:
@@ -284,7 +303,7 @@ class _TimingMessageLayer(MessagePassing):
         #   soft_max(z; beta) = max(z) + (1/beta) * log(sum_i exp(beta * (z_i - max)))
         # Soft min reuses the soft max on negated inputs:
         #   soft_min(z; beta) = -soft_max(-z; beta)
-        beta = self.soft_temperature
+        beta = float(self.soft_temperature_buf.item())
         signed = inputs if self.aggr_kind == "max" else -inputs
         # Per-destination max for numerical stability.
         max_per_dst = scatter(signed, index, dim=0, dim_size=dim_size, reduce="max")
@@ -307,8 +326,21 @@ class TimingPropagationBackbone(nn.Module):
     job is then approximately (RT - AT), which is exactly the STA formula.
 
     With K = `num_layers` iterations, messages can reach gates K hops deep —
-    matched empirically to the dataset's typical max-depth (1-14 for 40-gate
-    circuits, hence default num_layers=8 in train.py once we wire that up).
+    so K must cover the deepest path in the train distribution. Defaults set
+    K = 8, but train.py also reads the dataset p95 logical_depth and bumps K
+    if the data is deeper than that.
+
+    Two changes from the previous design:
+      1. The per-iteration update no longer applies `combine(h, propagated)`
+         on the hidden state. Monotonicity is an invariant on the SCALAR
+         AT/RT quantities, not on a learned embedding that carries more than
+         just a scalar — clamping the hidden state freezes input information
+         and starves later iterations of gradient. The scalar AT/RT readouts
+         in the heads can enforce monotonicity at the output layer if needed.
+      2. The RT seed projection now reads ONLY the max-pool of h_at (not
+         mean+max). max(h_at) is the natural proxy for `max_AT`, which the
+         data generator uses to set `clock_period = 1.2 * max_AT`. Mixing in
+         a mean pool was diluting that signal with half-noise.
     """
 
     def __init__(self, config: NetSTAConfig):
@@ -330,19 +362,38 @@ class TimingPropagationBackbone(nn.Module):
         self.backward_layer = _TimingMessageLayer(
             hidden, config.edge_feature_dim, aggr_kind="min",
         )
-        # Projection from a per-graph summary of the AT pass (mean + max pool)
-        # into the per-node seed for the backward / RT pass. Initialized at
-        # small scale so early training stays close to the "no seed" baseline
-        # and the model learns to use the clock-period signal incrementally
-        # rather than all at once.
-        self.rt_seed_proj = nn.Linear(2 * hidden, hidden)
-        nn.init.normal_(self.rt_seed_proj.weight, mean=0.0, std=0.02)
+        # Projection from a per-graph MAX-pool of the AT pass into the per-
+        # node RT seed. Larger init (0.1 vs the previous 0.02) so the seed
+        # carries real magnitude from epoch 1 instead of starting as noise.
+        self.rt_seed_proj = nn.Linear(hidden, hidden)
+        nn.init.normal_(self.rt_seed_proj.weight, mean=0.0, std=0.1)
         nn.init.zeros_(self.rt_seed_proj.bias)
+
+        # Small linear readout from the AT max-pool to a scalar z-score'd
+        # clock_period estimate, used to add an auxiliary supervision loss
+        # in NetSTAModel.compute_loss. This is what forces the AT pass's
+        # max-pool to actually encode max_AT — otherwise rt_seed_proj has
+        # to ALSO discover what it should be pulling out of h_at, which is
+        # an unsupervised representation-learning problem inside the model.
+        self.clock_period_proj = nn.Linear(hidden, 1)
+        nn.init.zeros_(self.clock_period_proj.weight)
+        nn.init.zeros_(self.clock_period_proj.bias)
 
         # Pooled node embedding = [AT, RT]. The graph embedding doubles in
         # width because we concatenate mean + max pool over that.
         self.node_emb_dim = 2 * hidden
         self.graph_emb_dim = 2 * self.node_emb_dim
+
+    def set_soft_temperature(self, beta: float) -> None:
+        """Anneal the soft-aggregator temperature in both directional layers.
+
+        Higher beta -> harder max/min, closer to the eval-time hard aggregator.
+        Schedule it from ~8 early to ~1000 late so the train-time gradient
+        broadcasts to non-argmax inputs early (helping every node learn) and
+        converges to the eval-time semantics by the end of training.
+        """
+        self.forward_layer.set_soft_temperature(beta)
+        self.backward_layer.set_soft_temperature(beta)
 
     def _iterate(
         self,
@@ -351,20 +402,24 @@ class TimingPropagationBackbone(nn.Module):
         edge_index: torch.Tensor,
         edge_attr: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        """Run `num_iterations` relaxation sweeps with monotonic update.
+        """Run `num_iterations` relaxation sweeps over the directed graph.
 
-        For forward (max-agg) propagation we keep `max(h, propagated)` so the
-        AT embedding is non-decreasing — the STA invariant. Symmetric for
-        backward (min-agg).
+        The previous version clamped the hidden state with `combine(h,
+        propagated)` to keep AT non-decreasing / RT non-increasing as a
+        STA invariant. That clamp was applied to a 64-dim learned embedding
+        rather than to the scalar AT/RT quantities, which froze early-
+        iteration input information into the embedding forever and stopped
+        the recurrence from refining it. The scalar invariant — if useful —
+        belongs on the AT/RT scalar outputs at the head, not on the hidden
+        state. So this version updates the embedding directly to whatever
+        the message layer propagates.
         """
         ea = edge_attr
         if ea is None or ea.numel() == 0 or edge_index.numel() == 0:
             # Disconnected graph: nothing to propagate, return input as-is.
             return h
-        combine = torch.maximum if layer.aggr_kind == "max" else torch.minimum
         for _ in range(self.num_iterations):
-            propagated = layer(h, edge_index, ea)
-            h = combine(h, propagated)
+            h = layer(h, edge_index, ea)
             h = F.dropout(h, p=self.dropout, training=self.training)
         return h
 
@@ -386,17 +441,18 @@ class TimingPropagationBackbone(nn.Module):
         h_at = self._iterate(h, self.forward_layer, edge_index, edge_attr)
 
         # Boundary condition for the backward pass: required_time at the POs
-        # equals the clock period, which in our STA scales with max_AT and
-        # therefore VARIES per graph. A purely local backward sweep cannot
-        # discover this from local features alone, so we inject a per-graph
-        # AT summary (mean + max pool of h_at) into every node's RT seed.
-        # This gives the backward sweep the clock-period context it needs
-        # while keeping each node's local embedding intact.
-        graph_at = torch.cat(
-            [global_mean_pool(h_at, batch), global_max_pool(h_at, batch)], dim=-1,
-        )                                                       # [B, 2*hidden]
-        seed_offset = self.rt_seed_proj(graph_at)               # [B, hidden]
+        # equals the clock period, which scales with max_AT and varies per
+        # graph. We expose two derivatives of the AT pass at the graph level:
+        #   - graph_at_max: per-graph max-pool of h_at, which serves as the
+        #     proxy for max_AT. Used both to seed RT and to supervise the
+        #     clock-period auxiliary loss in NetSTAModel.compute_loss.
+        #   - clock_period_logit: a small linear from graph_at_max to a
+        #     scalar; the auxiliary loss aligns this with the true z-scored
+        #     clock_period attached to each Data object.
+        graph_at_max = global_max_pool(h_at, batch)             # [B, hidden]
+        seed_offset = self.rt_seed_proj(graph_at_max)            # [B, hidden]
         h_rt_seed = h + seed_offset[batch]
+        clock_period_logit = self.clock_period_proj(graph_at_max).squeeze(-1)  # [B]
 
         rev_edge_index = edge_index.flip(0) if edge_index.numel() else edge_index
         h_rt = self._iterate(h_rt_seed, self.backward_layer, rev_edge_index, edge_attr)
@@ -405,7 +461,11 @@ class TimingPropagationBackbone(nn.Module):
         graph_emb = torch.cat(
             [global_mean_pool(node_emb, batch), global_max_pool(node_emb, batch)], dim=-1,
         )
-        return {"node_emb": node_emb, "graph_emb": graph_emb}
+        return {
+            "node_emb": node_emb,
+            "graph_emb": graph_emb,
+            "clock_period_logit": clock_period_logit,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -515,22 +575,21 @@ class SlackHead(_NsRegressionHead):
     * Direct (default): a one-hidden-layer MLP regresses slack directly from
       the full per-node embedding. Used with any backbone.
 
-    * Compositional: set `compositional=True` to derive slack as
-      RT_pred - AT_pred, with the RT and AT readouts each taking a clean
-      half of the directional backbone's [AT_emb, RT_emb] concatenation.
-      The head then has no learnable parameters of its own beyond what the
-      auxiliary AT/RT heads already learn — the STA identity is baked in
-      structurally and the slack prediction is mechanically consistent with
-      the AT and RT predictions. Recommended whenever the auxiliary AT/RT
-      heads are active.
+    * Compositional + residual: set `compositional=True` to base slack on
+      `RT_pred - AT_pred`, derived from the AT and RT heads that each read a
+      clean half of the directional backbone's [AT_emb, RT_emb] concatenation,
+      AND add a small learnable residual MLP on top so the slack head has
+      direct capacity to correct correlated AT/RT errors that propagate into
+      the difference. The residual's last layer is zero-initialized so the
+      head starts as the pure compositional form and learns the correction
+      from there. Used whenever the auxiliary AT/RT heads are active.
 
-    Loss is Huber (smooth-L1) in z-space rather than MSE. Slack has a
-    long-left-tail distribution (nodes with timing violations sit at large
-    negative slack); MSE over-weights those, pulling the regression away
-    from the bulk of well-behaved nodes. Huber stays quadratic for small
-    residuals (so it matches MSE in the normal regime) but is linear past
-    the delta threshold, capping the influence of any single outlier on
-    the gradient.
+    Loss is Huber (smooth-L1) in z-space rather than MSE. The previous
+    delta=0.5 in z-space put residuals above ~0.5 std into the linear regime,
+    which capped the gradient on the critical-path tail — exactly the nodes
+    a timing model needs to fit accurately. delta=2.0 keeps the quadratic
+    regime through the bulk of the distribution while still bounding gradient
+    on extreme outliers.
     """
 
     name = "slack"
@@ -543,7 +602,7 @@ class SlackHead(_NsRegressionHead):
         slack_mean: float = 0.0,
         slack_std: float = 1.0,
         compositional: bool = False,
-        huber_delta: float = 0.5,
+        huber_delta: float = 2.0,
     ):
         super().__init__(
             in_dim=in_dim, dropout=dropout,
@@ -557,10 +616,26 @@ class SlackHead(_NsRegressionHead):
         self.register_buffer("slack_std", self.target_std)
         self.compositional = bool(compositional)
         # Delta is interpreted in z-space units after dividing both pred and
-        # target by target_std. delta=0.5 means "treat residuals up to 0.5 std
-        # as quadratic, beyond that as linear" — fits ~38% of a unit-normal
-        # distribution and clips the outlier tail aggressively.
+        # target by target_std. delta=2.0 keeps residuals up to 2 std in the
+        # quadratic regime (~95% of a unit-normal) so the critical-path tail
+        # stays inside MSE-like gradient behaviour; past that the loss goes
+        # linear so a single extreme outlier cannot dominate the gradient.
         self.huber_delta = float(huber_delta)
+
+        # Learnable residual on top of compositional (RT - AT). Final layer
+        # zero-initialized so initial prediction == pure compositional, with
+        # the residual contribution learned during training.
+        if self.compositional:
+            self.residual_mlp = nn.Sequential(
+                nn.Linear(in_dim, in_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(in_dim, 1),
+            )
+            nn.init.zeros_(self.residual_mlp[-1].weight)
+            nn.init.zeros_(self.residual_mlp[-1].bias)
+        else:
+            self.residual_mlp = None
 
     def loss(self, pred, target):
         return F.smooth_l1_loss(
@@ -588,7 +663,13 @@ class SlackHead(_NsRegressionHead):
                 and getattr(self, "_rt_head", None) is not None:
             at_pred = self._at_head(node_emb, graph_emb, batch)
             rt_pred = self._rt_head(node_emb, graph_emb, batch)
-            return rt_pred - at_pred
+            base = rt_pred - at_pred
+            if self.residual_mlp is None:
+                return base
+            # Residual is in ns (target scale already), scaled by target_std
+            # so the optimizer sees a unit-variance gradient on it.
+            residual_z = self.residual_mlp(node_emb).squeeze(-1)
+            return base + residual_z * self.target_std
         z = self.head(node_emb).squeeze(-1)
         return z * self.target_std + self.target_mean
 
@@ -877,6 +958,11 @@ class NetSTAModel(nn.Module):
             preds[name] = head(emb["node_emb"], emb["graph_emb"], batch)
         preds["_node_emb"] = emb["node_emb"]
         preds["_graph_emb"] = emb["graph_emb"]
+        # Pass through the backbone's per-graph clock-period readout when the
+        # timing backbone is active; compute_loss picks it up if a clock
+        # target is also supplied.
+        if "clock_period_logit" in emb:
+            preds["_clock_period_logit"] = emb["clock_period_logit"]
         return preds
 
     def compute_loss(
@@ -886,7 +972,13 @@ class NetSTAModel(nn.Module):
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Return (total_loss, per_task_losses).
 
-        `targets` only needs to contain entries for the active heads.
+        `targets` only needs to contain entries for the active heads. An
+        optional `clock_period` target (one scalar per graph in the batch)
+        triggers the backbone-level clock-period auxiliary loss; this is
+        what forces the AT pass's graph-level max-pool to actually encode
+        max_AT, which in turn supplies the RT seed with a clean per-graph
+        boundary condition. Loss weight comes from
+        config.task_weights.get('clock_period', 0.5).
         """
         per_task: Dict[str, torch.Tensor] = {}
         total = None
@@ -897,6 +989,19 @@ class NetSTAModel(nn.Module):
             per_task[name] = ltask
             weight = self.task_weights[name]
             total = ltask * weight if total is None else total + weight * ltask
+        # Backbone-level clock-period aux supervision. Z-score the target by
+        # the slack-head's target_std (proxy for an O(ns) scale) so the loss
+        # is comparable in magnitude to the regression head losses.
+        clock_logit = predictions.get("_clock_period_logit")
+        clock_target = targets.get("clock_period")
+        if clock_logit is not None and clock_target is not None:
+            slack_head = self.heads.get("slack")
+            scale = slack_head.target_std if slack_head is not None else 1.0
+            target_z = clock_target.to(clock_logit.dtype) / scale
+            laux = F.mse_loss(clock_logit, target_z)
+            per_task["clock_period"] = laux
+            weight = self.task_weights.get("clock_period", 0.5)
+            total = laux * weight if total is None else total + weight * laux
         if total is None:
             raise ValueError("compute_loss called with no matching targets")
         return total, per_task
