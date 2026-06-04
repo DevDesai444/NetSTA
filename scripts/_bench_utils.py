@@ -26,8 +26,10 @@ from netsta.model import NetSTAModel
 from netsta.train import (
     TARGET_KEY,
     _build_scheduler,
+    _maybe_set_backbone_temperature,
     _resolve_task_weights,
     _select_device,
+    _soft_temperature_for_epoch,
     _targets_for_batch,
     train_epoch,
     validate,
@@ -96,6 +98,11 @@ def fit_torch_model(
     history: List[Dict] = []
 
     for epoch in range(1, epochs + 1):
+        # Mirror the main train()'s soft-temperature ramp so benchmark runs
+        # converge on the same eval-time aggregator semantics.
+        _maybe_set_backbone_temperature(
+            model, _soft_temperature_for_epoch(epoch, epochs),
+        )
         tr = train_epoch(model, train_loader, optimizer, device, scaler, use_amp)
         va = validate(model, val_loader, device)
         scheduler.step()
@@ -201,7 +208,7 @@ def make_netsta(
     edge_feature_dim: int,
     *,
     hidden_dim: int = 64,
-    num_layers: int = 4,
+    num_layers: int = 8,
     num_heads: int = 4,
     dropout: float = 0.1,
     lr: float = 1e-3,

@@ -64,6 +64,18 @@ def _targets_for_batch(data, active_tasks):
                 f"or bump schema) or drop the task from --tasks."
             )
         targets[t] = getattr(data, key)
+    # clock_period is not a per-head task — it supervises the backbone's
+    # AT-pool max-readout. Surfaced as a target so compute_loss can pick it
+    # up alongside the per-head targets. Stored on Data as a per-graph
+    # scalar; PyG concatenates per-graph scalars into a [batch_size] tensor.
+    if hasattr(data, "clock_period"):
+        clock = data.clock_period
+        if isinstance(clock, torch.Tensor):
+            targets["clock_period"] = clock.float().view(-1)
+        else:
+            targets["clock_period"] = torch.tensor(
+                [float(clock)], dtype=torch.float, device=data.x.device,
+            )
     return targets
 
 
@@ -93,6 +105,76 @@ def _build_scheduler(optimizer, total_epochs: int, warmup_epochs: int):
     return torch.optim.lr_scheduler.SequentialLR(
         optimizer, [warmup, cosine], milestones=[warmup_epochs]
     )
+
+
+def _soft_temperature_for_epoch(
+    epoch: int, total_epochs: int,
+    beta_start: float = 8.0, beta_end: float = 1000.0,
+) -> float:
+    """Geometric ramp from beta_start to beta_end over total_epochs.
+
+    The timing backbone's soft aggregator uses LogSumExp with temperature
+    beta during training; at eval the aggregator switches to hard max/min.
+    Ramping beta toward infinity narrows that train/eval gap so the model's
+    learned representations are correct under the hard-max semantics it
+    will see at inference. Geometric (log-linear) ramp keeps the early
+    epochs at a relatively soft beta and pushes hard-max behaviour into
+    the final third where the model is consolidating.
+    """
+    if total_epochs <= 1:
+        return beta_end
+    import math
+    e = max(0, min(epoch - 1, total_epochs - 1))
+    frac = e / (total_epochs - 1)
+    log_beta = math.log(beta_start) + frac * (math.log(beta_end) - math.log(beta_start))
+    return math.exp(log_beta)
+
+
+def _maybe_set_backbone_temperature(model, beta: float) -> None:
+    """Set soft-aggregator beta on the timing backbone if it has one.
+
+    No-op for the GATv2 backbone and for plain baseline models so the same
+    training loop handles every model variant.
+    """
+    backbone = getattr(model, "backbone", None)
+    setter = getattr(backbone, "set_soft_temperature", None) if backbone else None
+    if setter is not None:
+        setter(beta)
+
+
+def _dataset_depth_p95(dataset, indices) -> int:
+    """Approximate p95 of per-node logical_depth across the train subset.
+
+    The timing backbone needs at least `max_depth` relaxation iterations to
+    propagate the AT/RT signal from sources to the deepest node; setting
+    num_layers too low caps the effective receptive field below the longest
+    path in the data. p95 (rather than max) is robust to a single outlier
+    circuit but still covers the realistic deep tail.
+    """
+    import torch as _torch
+    depths = []
+    for i in indices:
+        sample = dataset[i]
+        d = getattr(sample, "y_logical_depth", None)
+        if d is None or d.numel() == 0:
+            continue
+        depths.append(d.max().item())
+    if not depths:
+        return 0
+    t = _torch.tensor(depths, dtype=_torch.float)
+    return int(_torch.quantile(t, 0.95).item())
+
+
+def resolve_num_layers(requested: int, dataset, train_idx, floor: int = 8) -> int:
+    """Pick num_layers >= max(floor, dataset p95 depth, requested).
+
+    Bench scripts pass an explicit `requested` (e.g. the 2/4/6/8/12 sweep in
+    the ablation) so those calls flow through unchanged. The main `train()`
+    entrypoint passes the config default and lets this adapt it upward when
+    the data is deeper than the default.
+    """
+    p95 = _dataset_depth_p95(dataset, train_idx)
+    return max(int(requested), int(floor), int(p95))
 
 
 def _amp_context(use_amp: bool):
@@ -353,11 +435,19 @@ def train(
     )
 
     use_symmetry = circuit_type in ("analog", "mixed")
+    # Pick num_layers >= dataset p95 logical depth so the timing relaxation
+    # actually reaches the deepest node in the train pool.
+    effective_layers = resolve_num_layers(num_layers, dataset, train_idx)
+    if effective_layers != num_layers:
+        print(
+            f"num_layers: requested {num_layers}, adapted to {effective_layers} "
+            f"(p95 train-subset depth or floor)."
+        )
     config = NetSTAConfig(
         node_feature_dim=in_channels,
         edge_feature_dim=edge_dim,
         hidden_dim=hidden_channels,
-        num_layers=num_layers,
+        num_layers=effective_layers,
         num_heads=heads,
         dropout=0.1,
         learning_rate=lr,
@@ -395,6 +485,12 @@ def train(
     history = []
 
     for epoch in range(1, epochs + 1):
+        # Anneal the timing backbone's soft-aggregator temperature so the
+        # train-time gradient broadcasts widely early and converges on the
+        # eval-time hard-max semantics by the end of training.
+        _maybe_set_backbone_temperature(
+            model, _soft_temperature_for_epoch(epoch, epochs),
+        )
         train_metrics = train_epoch(model, train_loader, optimizer, dev, scaler, use_amp)
         val_metrics = validate(model, val_loader, dev)
         scheduler.step()

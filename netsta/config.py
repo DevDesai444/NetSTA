@@ -9,20 +9,19 @@ from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
 
-# Default training targets all three timing quantities the directional
-# backbone is structured around. With the compositional SlackHead in play,
-# slack_pred = RT_pred - AT_pred mechanically, so the slack loss is just
-# an extra constraint on (RT - AT). The individual AT and RT losses are the
-# ones that anchor the backbone halves to the right absolute values. Weights
-# are balanced so the auxiliary supervision matches slack in magnitude —
-# under-weighted AT/RT lets the slack gradient dominate and the model
-# satisfies slack = RT - AT by collapsing both predictions toward the slack
-# target rather than tracking AT and RT independently. critical_path is
-# available on demand via --tasks but is not in the default set.
+# Default training targets the three timing quantities the directional
+# backbone is structured around plus a backbone-level clock_period auxiliary.
+# The compositional + residual SlackHead means slack has its own parameters
+# AND inherits (RT - AT), so its gradient is no longer purely indirect — it
+# carries the headline weight (2.0). AT and RT each at 1.0 anchor the
+# backbone halves to absolute ns. clock_period at 0.5 supervises the
+# AT-pool max so the RT seed gets a clean per-graph boundary condition.
+# critical_path is available on demand via --tasks but is not in the default.
 DEFAULT_TASK_WEIGHTS: Dict[str, float] = {
-    "slack": 0.5,
+    "slack": 2.0,
     "arrival_time": 1.0,
     "required_time": 1.0,
+    "clock_period": 0.5,
 }
 
 DEFAULT_ACTIVE_TASKS: Tuple[str, ...] = (
@@ -45,13 +44,14 @@ class NetSTAConfig:
     hidden_dim: int = 64
     # For the timing backbone, num_layers controls the number of relaxation
     # iterations of each directed sweep (shared weights across iterations).
-    # 6 covers the typical depth distribution (mean ~9 on the standard mixed
-    # circuit pool — soft aggregation propagates signal further than the
-    # iteration count in practice). Bumping further produced diminishing
-    # returns in the ablation under the post-MLP design; with the additive
-    # rewrite each iteration composes meaningfully so 6 strikes the balance
-    # between coverage and overfitting risk on the train pool.
-    num_layers: int = 6
+    # Default 8 covers the deeper tail of the standard 1000-circuit pool
+    # (p95 depth lands in the 8-12 range across the train splits we use).
+    # train.py adapts this upward when the actual dataset is deeper than the
+    # default; bench scripts pass an explicit value to keep ablations
+    # comparable. Each iteration with the additive rewrite composes
+    # meaningfully so the coverage/overfitting tradeoff is more forgiving
+    # than under the post-MLP design.
+    num_layers: int = 8
     num_heads: int = 4
     dropout: float = 0.1
 
