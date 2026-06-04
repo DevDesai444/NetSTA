@@ -995,7 +995,8 @@ class NetSTAModel(nn.Module):
         clock_logit = predictions.get("_clock_period_logit")
         clock_target = targets.get("clock_period")
         if clock_logit is not None and clock_target is not None:
-            slack_head = self.heads.get("slack")
+            # ModuleDict supports __contains__ / __getitem__ but not .get().
+            slack_head = self.heads["slack"] if "slack" in self.heads else None
             scale = slack_head.target_std if slack_head is not None else 1.0
             target_z = clock_target.to(clock_logit.dtype) / scale
             laux = F.mse_loss(clock_logit, target_z)
