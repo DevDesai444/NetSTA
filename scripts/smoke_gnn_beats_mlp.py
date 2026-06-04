@@ -120,6 +120,8 @@ def main():
         arrival_time_std=stats.arrival_time_std,
         required_time_mean=stats.required_time_mean,
         required_time_std=stats.required_time_std,
+        clock_period_mean=stats.clock_period_mean,
+        clock_period_std=stats.clock_period_std,
     ).to(device)
     mlp = MLPBaseline(
         node_dim, hidden=args.hidden * 2,

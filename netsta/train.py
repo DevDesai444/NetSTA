@@ -416,12 +416,17 @@ def train(
     # own loss while keeping forward outputs in ns.
     has_at = any(hasattr(dataset[i], "y_arrival_time") for i in train_idx[:1])
     has_rt = any(hasattr(dataset[i], "y_required_time") for i in train_idx[:1])
+    has_clock = any(hasattr(dataset[i], "clock_period") for i in train_idx[:1])
     at_iter = (dataset[i].y_arrival_time for i in train_idx) if has_at else None
     rt_iter = (dataset[i].y_required_time for i in train_idx) if has_rt else None
+    clock_iter = (
+        (float(dataset[i].clock_period) for i in train_idx) if has_clock else None
+    )
     stats = DatasetStats.from_target_tensors(
         (dataset[i].y_slack for i in train_idx),
         arrival_tensors=at_iter,
         required_tensors=rt_iter,
+        clock_period_scalars=clock_iter,
     )
     stats_path = os.path.join(checkpoint_dir, STATS_FILENAME)
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -431,6 +436,7 @@ def train(
         f"slack mean={stats.slack_mean:.4f}/std={stats.slack_std:.4f}  "
         f"AT mean={stats.arrival_time_mean:.4f}/std={stats.arrival_time_std:.4f}  "
         f"RT mean={stats.required_time_mean:.4f}/std={stats.required_time_std:.4f}  "
+        f"clock mean={stats.clock_period_mean:.4f}/std={stats.clock_period_std:.4f}  "
         f"-> {stats_path}"
     )
 
@@ -460,6 +466,8 @@ def train(
         arrival_time_std=stats.arrival_time_std,
         required_time_mean=stats.required_time_mean,
         required_time_std=stats.required_time_std,
+        clock_period_mean=stats.clock_period_mean,
+        clock_period_std=stats.clock_period_std,
     )
     model = NetSTAModel(config).to(dev)
 

@@ -369,15 +369,25 @@ class TimingPropagationBackbone(nn.Module):
         nn.init.normal_(self.rt_seed_proj.weight, mean=0.0, std=0.1)
         nn.init.zeros_(self.rt_seed_proj.bias)
 
-        # Small linear readout from the AT max-pool to a scalar z-score'd
-        # clock_period estimate, used to add an auxiliary supervision loss
-        # in NetSTAModel.compute_loss. This is what forces the AT pass's
+        # Small linear readout from the AT max-pool to a z-scored clock-
+        # period estimate, used by an auxiliary supervision loss in
+        # NetSTAModel.compute_loss. This is what forces the AT pass's
         # max-pool to actually encode max_AT — otherwise rt_seed_proj has
         # to ALSO discover what it should be pulling out of h_at, which is
         # an unsupervised representation-learning problem inside the model.
+        # Buffers carry the train-set clock_period mean/std so the loss can
+        # z-score the target without the train script re-passing them.
         self.clock_period_proj = nn.Linear(hidden, 1)
         nn.init.zeros_(self.clock_period_proj.weight)
         nn.init.zeros_(self.clock_period_proj.bias)
+        self.register_buffer(
+            "clock_period_mean",
+            torch.tensor(float(getattr(config, "clock_period_mean", 0.0))),
+        )
+        self.register_buffer(
+            "clock_period_std",
+            torch.tensor(max(float(getattr(config, "clock_period_std", 1.0)), 1e-3)),
+        )
 
         # Pooled node embedding = [AT, RT]. The graph embedding doubles in
         # width because we concatenate mean + max pool over that.
@@ -404,22 +414,31 @@ class TimingPropagationBackbone(nn.Module):
     ) -> torch.Tensor:
         """Run `num_iterations` relaxation sweeps over the directed graph.
 
-        The previous version clamped the hidden state with `combine(h,
-        propagated)` to keep AT non-decreasing / RT non-increasing as a
-        STA invariant. That clamp was applied to a 64-dim learned embedding
-        rather than to the scalar AT/RT quantities, which froze early-
-        iteration input information into the embedding forever and stopped
-        the recurrence from refining it. The scalar invariant — if useful —
-        belongs on the AT/RT scalar outputs at the head, not on the hidden
-        state. So this version updates the embedding directly to whatever
-        the message layer propagates.
+        The per-iteration combine `h = elementwise_max(h, propagated)` for
+        the forward pass (and `min` for the backward pass) does two jobs:
+
+          1. Source-node anchoring. A PI in the forward pass has no
+             incoming edges, so the scatter-max returns the aggregator's
+             init value (-inf-equivalent) rather than the PI's own
+             embedding. Without combine, the PI loses its input
+             projection and the rest of the DAG inherits garbage from
+             iteration 1 onward.
+          2. Monotone accumulation. Each iteration extends propagation
+             by one DAG hop without ever shrinking the embedding, which
+             mirrors the STA semantic that AT is non-decreasing along
+             every path.
+
+        Job (1) is structurally required for the propagation to be
+        correct at all; (2) is an optional inductive bias. Keep both.
         """
         ea = edge_attr
         if ea is None or ea.numel() == 0 or edge_index.numel() == 0:
             # Disconnected graph: nothing to propagate, return input as-is.
             return h
+        combine = torch.maximum if layer.aggr_kind == "max" else torch.minimum
         for _ in range(self.num_iterations):
-            h = layer(h, edge_index, ea)
+            propagated = layer(h, edge_index, ea)
+            h = combine(h, propagated)
             h = F.dropout(h, p=self.dropout, training=self.training)
         return h
 
@@ -995,10 +1014,16 @@ class NetSTAModel(nn.Module):
         clock_logit = predictions.get("_clock_period_logit")
         clock_target = targets.get("clock_period")
         if clock_logit is not None and clock_target is not None:
-            # ModuleDict supports __contains__ / __getitem__ but not .get().
-            slack_head = self.heads["slack"] if "slack" in self.heads else None
-            scale = slack_head.target_std if slack_head is not None else 1.0
-            target_z = clock_target.to(clock_logit.dtype) / scale
+            # Z-score using the backbone's own clock_period stats (filled in
+            # from DatasetStats by train.py / bench utils). Defaults to
+            # mean=0, std=1 so the loss is still well-scaled on first use
+            # against caches that pre-date the stats addition.
+            backbone = getattr(self, "backbone", None)
+            mean = getattr(backbone, "clock_period_mean", None)
+            std = getattr(backbone, "clock_period_std", None)
+            mean_v = mean.to(clock_logit.dtype) if mean is not None else 0.0
+            std_v = std.to(clock_logit.dtype) if std is not None else 1.0
+            target_z = (clock_target.to(clock_logit.dtype) - mean_v) / std_v
             laux = F.mse_loss(clock_logit, target_z)
             per_task["clock_period"] = laux
             weight = self.task_weights.get("clock_period", 0.5)

@@ -84,6 +84,13 @@ class NetSTAConfig:
     arrival_time_std: float = 1.0
     required_time_mean: float = 0.0
     required_time_std: float = 1.0
+    # Used by NetSTAModel.compute_loss to z-score the backbone-level
+    # clock-period auxiliary target. Independent from slack stats because
+    # clock_period lives on an O(1ns) scale while slack is O(0.1ns); reusing
+    # slack_std would amplify the aux loss enough to dominate the joint
+    # objective.
+    clock_period_mean: float = 0.0
+    clock_period_std: float = 1.0
 
     # Ablation flags. Defaults reproduce the original GATv2 architecture
     # exactly (so the existing ablation table still measures what it claims).

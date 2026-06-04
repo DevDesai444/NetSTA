@@ -30,6 +30,12 @@ class DatasetStats:
     when the auxiliary heads are active. A stats file written by an older
     training run will still load — the new fields fall back to safe defaults
     that produce identity scaling.
+
+    clock_period_mean / clock_period_std summarize the per-graph clock_period
+    scalars across the train subset. They z-score the backbone-level
+    clock-period auxiliary loss so its magnitude is comparable to the per-
+    head losses (otherwise raw-ns targets in O(1) get amplified through the
+    inverse of slack_std ~0.1 and dominate the joint objective).
     """
     slack_mean: float = 0.0
     slack_std: float = 1.0
@@ -37,6 +43,8 @@ class DatasetStats:
     arrival_time_std: float = 1.0
     required_time_mean: float = 0.0
     required_time_std: float = 1.0
+    clock_period_mean: float = 0.0
+    clock_period_std: float = 1.0
 
     @classmethod
     def from_slack_tensors(cls, slack_tensors: Iterable[torch.Tensor]) -> "DatasetStats":
@@ -54,12 +62,15 @@ class DatasetStats:
         slack_tensors: Iterable[torch.Tensor],
         arrival_tensors: Iterable[torch.Tensor] | None = None,
         required_tensors: Iterable[torch.Tensor] | None = None,
+        clock_period_scalars: Iterable[float] | None = None,
     ) -> "DatasetStats":
         """Compute mean/std for every available target stream.
 
-        Pass `None` for AT/RT when those labels are not yet populated on the
-        dataset (e.g. v6-and-older caches loaded against new code) — the
-        defaults keep the head's standardization as an identity transform.
+        Pass `None` for AT/RT/clock when those labels are not yet populated
+        on the dataset (e.g. v6-and-older caches loaded against new code) —
+        the defaults keep the head's standardization as an identity transform.
+        clock_period_scalars accepts an iterable of per-graph floats; these
+        are gathered into a flat tensor before stat computation.
         """
         slack_m, slack_s = _mean_std(slack_tensors)
         out = cls(slack_mean=slack_m, slack_std=slack_s)
@@ -67,6 +78,11 @@ class DatasetStats:
             out.arrival_time_mean, out.arrival_time_std = _mean_std(arrival_tensors)
         if required_tensors is not None:
             out.required_time_mean, out.required_time_std = _mean_std(required_tensors)
+        if clock_period_scalars is not None:
+            scalar_t = torch.tensor(
+                [float(v) for v in clock_period_scalars], dtype=torch.float,
+            )
+            out.clock_period_mean, out.clock_period_std = _mean_std([scalar_t])
         return out
 
     def save(self, path: str) -> None:
