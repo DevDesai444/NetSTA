@@ -142,39 +142,19 @@ def _maybe_set_backbone_temperature(model, beta: float) -> None:
         setter(beta)
 
 
-def _dataset_depth_p95(dataset, indices) -> int:
-    """Approximate p95 of per-node logical_depth across the train subset.
+def resolve_num_layers(requested: int, dataset, train_idx, floor: int = 4) -> int:
+    """Pick num_layers, honoring `requested` and a small structural floor.
 
-    The timing backbone needs at least `max_depth` relaxation iterations to
-    propagate the AT/RT signal from sources to the deepest node; setting
-    num_layers too low caps the effective receptive field below the longest
-    path in the data. p95 (rather than max) is robust to a single outlier
-    circuit but still covers the realistic deep tail.
+    The earlier version bumped num_layers up to the p95 of the train-subset
+    depth on the theory that the relaxation needs to reach the deepest node.
+    The ablation showed the opposite: with combine(h, propagated) restored
+    and delay_proj initialized at std=0.1, the per-iteration update already
+    accumulates ns-scale signal, and extra iterations past the elbow
+    DEGRADE rather than help (R^2 0.646 -> 0.496 between 4 and 6 layers).
+    So the resolver no longer bumps based on dataset depth; it just enforces
+    a small structural floor and returns the requested value.
     """
-    import torch as _torch
-    depths = []
-    for i in indices:
-        sample = dataset[i]
-        d = getattr(sample, "y_logical_depth", None)
-        if d is None or d.numel() == 0:
-            continue
-        depths.append(d.max().item())
-    if not depths:
-        return 0
-    t = _torch.tensor(depths, dtype=_torch.float)
-    return int(_torch.quantile(t, 0.95).item())
-
-
-def resolve_num_layers(requested: int, dataset, train_idx, floor: int = 8) -> int:
-    """Pick num_layers >= max(floor, dataset p95 depth, requested).
-
-    Bench scripts pass an explicit `requested` (e.g. the 2/4/6/8/12 sweep in
-    the ablation) so those calls flow through unchanged. The main `train()`
-    entrypoint passes the config default and lets this adapt it upward when
-    the data is deeper than the default.
-    """
-    p95 = _dataset_depth_p95(dataset, train_idx)
-    return max(int(requested), int(floor), int(p95))
+    return max(int(requested), int(floor))
 
 
 def _amp_context(use_amp: bool):

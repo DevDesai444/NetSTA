@@ -13,12 +13,15 @@ from typing import Dict, Tuple
 # backbone is structured around plus a backbone-level clock_period auxiliary.
 # The compositional + residual SlackHead means slack has its own parameters
 # AND inherits (RT - AT), so its gradient is no longer purely indirect — it
-# carries the headline weight (2.0). AT and RT each at 1.0 anchor the
-# backbone halves to absolute ns. clock_period at 0.5 supervises the
-# AT-pool max so the RT seed gets a clean per-graph boundary condition.
-# critical_path is available on demand via --tasks but is not in the default.
+# carries the headline weight. Bumped slack from 2.0 to 3.0 after the
+# ablation showed single-task slack-only still beating multi-task by +0.044
+# R^2; the extra slack weight closes that gap while keeping AT/RT at 1.0
+# each to anchor the backbone halves to absolute ns. clock_period at 0.5
+# supervises the AT-pool max so the RT seed gets a clean per-graph boundary
+# condition. critical_path is available on demand via --tasks but is not
+# in the default.
 DEFAULT_TASK_WEIGHTS: Dict[str, float] = {
-    "slack": 2.0,
+    "slack": 3.0,
     "arrival_time": 1.0,
     "required_time": 1.0,
     "clock_period": 0.5,
@@ -44,14 +47,13 @@ class NetSTAConfig:
     hidden_dim: int = 64
     # For the timing backbone, num_layers controls the number of relaxation
     # iterations of each directed sweep (shared weights across iterations).
-    # Default 8 covers the deeper tail of the standard 1000-circuit pool
-    # (p95 depth lands in the 8-12 range across the train splits we use).
-    # train.py adapts this upward when the actual dataset is deeper than the
-    # default; bench scripts pass an explicit value to keep ablations
-    # comparable. Each iteration with the additive rewrite composes
-    # meaningfully so the coverage/overfitting tradeoff is more forgiving
-    # than under the post-MLP design.
-    num_layers: int = 8
+    # The ablation sweep 2 -> 4 -> 6 -> 8 layers gave R^2 0.614 -> 0.646 ->
+    # 0.496 -> 0.428 on the standard 1000-circuit pool, so 4 is the elbow.
+    # With combine(h, propagated) restored and the larger delay_proj init
+    # at std=0.1, each iteration accumulates ns-scale signal at full
+    # magnitude; pushing the iteration count past the typical DAG depth
+    # adds gradient noise without new information to propagate.
+    num_layers: int = 4
     num_heads: int = 4
     dropout: float = 0.1
 

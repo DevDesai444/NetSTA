@@ -208,7 +208,7 @@ def make_netsta(
     edge_feature_dim: int,
     *,
     hidden_dim: int = 64,
-    num_layers: int = 8,
+    num_layers: int = 4,
     num_heads: int = 4,
     dropout: float = 0.1,
     lr: float = 1e-3,
