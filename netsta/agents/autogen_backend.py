@@ -45,8 +45,29 @@ _SYSTEM = {
 }
 
 
-def _model_client():
-    """Build an autogen-ext model client from env, or return None."""
+def _model_client(role_lora: Optional[str] = None):
+    """Build an autogen-ext model client from env, or return None.
+
+    Routing precedence:
+      1. NETSTA_VLLM_URL  -> per-role LoRA on our distilled Qwen2.5-7B server
+      2. OPENAI_API_KEY   -> gpt-4o-mini
+      3. ANTHROPIC_API_KEY -> Claude Haiku
+    """
+    try:
+        vllm_url = os.getenv("NETSTA_VLLM_URL")
+        if vllm_url:
+            from autogen_ext.models.openai import OpenAIChatCompletionClient
+            # vLLM names LoRA adapters via the `--lora-modules` flag; selecting
+            # the right one is just `model=<adapter_name>`.
+            adapter = role_lora or "supervisor"
+            return OpenAIChatCompletionClient(
+                model=adapter, base_url=vllm_url, api_key="dummy",
+                model_info={"vision": False, "function_calling": False,
+                            "json_output": True, "family": "qwen",
+                            "structured_output": False},
+            )
+    except Exception as exc:
+        print(f"[autogen_backend] vLLM client failed: {exc!r}")
     try:
         if os.getenv("OPENAI_API_KEY"):
             from autogen_ext.models.openai import OpenAIChatCompletionClient
@@ -96,10 +117,6 @@ def run_autogen_groupchat(
     from autogen_agentchat.conditions import MaxMessageTermination
     from autogen_agentchat.teams import RoundRobinGroupChat
 
-    client = _model_client()
-    if client is None:
-        return None
-
     # 1. Ground the discussion with the deterministic specialists' typed output.
     timing_agent, drc_agent, opt_agent = agents
     timing_turn = timing_agent.diagnose(predictions, node_ids, retriever, topology, process_node)
@@ -107,11 +124,19 @@ def run_autogen_groupchat(
     opt_turn = opt_agent.reconcile([timing_turn, drc_turn], retriever)
     grounded_turns = [timing_turn, drc_turn, opt_turn]
 
-    # 2. Real AutoGen agents discuss over that grounded context.
-    ag_agents = [
-        AssistantAgent(name=name, model_client=client, system_message=msg)
-        for name, msg in _SYSTEM.items()
-    ]
+    # 2. Real AutoGen agents discuss over that grounded context. Each agent
+    #    gets its own LoRA-routed client (vLLM backend) so the panel is four
+    #    genuinely distinct specialists, not four prompts on one model.
+    role_for_name = {
+        "SupervisorAgent": "supervisor", "TimingAgent": "timing",
+        "DRCAgent": "drc", "OptimizationAgent": "optimization",
+    }
+    ag_agents = []
+    for name, msg in _SYSTEM.items():
+        c = _model_client(role_lora=role_for_name.get(name))
+        if c is None:
+            return None
+        ag_agents.append(AssistantAgent(name=name, model_client=c, system_message=msg))
     team = RoundRobinGroupChat(
         ag_agents, termination_condition=MaxMessageTermination(max_messages=8)
     )
