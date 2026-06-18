@@ -23,6 +23,10 @@ from netsta.real_dataset import build_real_graphs, save_dataset, source_base, su
 
 def find_bench_files(root: str) -> list:
     files = sorted(glob.glob(os.path.join(root, "**", "*.bench"), recursive=True))
+    # Our Verilog reader handles ISCAS-85's gate-primitive netlists. EPFL .v use
+    # behavioural `assign`, and ISCAS-89 .v use dff sub-modules — both skipped.
+    vfiles = sorted(glob.glob(os.path.join(root, "**", "*.v"), recursive=True))
+    files += [f for f in vfiles if "ISCAS85" in f]
     return files
 
 
@@ -43,7 +47,10 @@ def main():
 
     excluded = {b.strip() for b in args.exclude.split(",") if b.strip()}
     files = find_bench_files(args.bench_root)
-    files = [f for f in files if source_base(os.path.basename(f)[:-6]) not in excluded]
+    files = [
+        f for f in files
+        if source_base(os.path.splitext(os.path.basename(f))[0]) not in excluded
+    ]
     if args.limit:
         files = files[: args.limit]
 

@@ -262,6 +262,47 @@ def load_bench_circuit(path: str, name: Optional[str] = None, seed: int = 0) -> 
 
 
 # ---------------------------------------------------------------------------
+# Structural-Verilog netlists (ISCAS-85 ships as gate-primitive .v)
+# ---------------------------------------------------------------------------
+
+_VPRIM = {
+    "and": "AND", "nand": "NAND", "or": "OR", "nor": "NOR",
+    "not": "NOT", "buf": "BUF", "xor": "XOR", "xnor": "XNOR",
+}
+# `nand NAND2_1 (out, a, b);` — instance name optional; first arg is the output.
+_VGATE_RE = re.compile(
+    r"\b(and|nand|or|nor|not|buf|xor|xnor)\b\s+(?:\w+\s*)?\(([^)]*)\)\s*;", re.I
+)
+_VIO_RE = re.compile(r"\b(input|output)\b\s+([^;]+);", re.I)
+
+
+def parse_verilog(path: str) -> BenchNetlist:
+    """Parse a gate-primitive structural Verilog netlist into a BenchNetlist."""
+    with open(path, "r", errors="ignore") as f:
+        text = f.read()
+    text = re.sub(r"//[^\n]*", "", text)            # line comments
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)  # block comments
+
+    nl = BenchNetlist(name=os.path.splitext(os.path.basename(path))[0])
+    for kind, body in _VIO_RE.findall(text):
+        names = [s.strip() for s in body.replace("\n", " ").split(",") if s.strip()]
+        (nl.inputs if kind.lower() == "input" else nl.outputs).extend(names)
+    for prim, args in _VGATE_RE.findall(text):
+        toks = [a.strip() for a in args.replace("\n", " ").split(",") if a.strip()]
+        if len(toks) < 2:
+            continue
+        out, ins = toks[0], toks[1:]
+        nl.gates.append((out, _VPRIM[prim.lower()], ins))
+    return nl
+
+
+def load_netlist(path: str, name: Optional[str] = None, seed: int = 0) -> Circuit:
+    """Load a .bench or structural-Verilog (.v) netlist into a Circuit."""
+    parser = parse_verilog if path.lower().endswith(".v") else parse_bench
+    return bench_to_circuit(parser(path), name=name, seed=seed)
+
+
+# ---------------------------------------------------------------------------
 # Fan-in cone windowing: one big netlist -> many real-structure sub-circuits.
 # ---------------------------------------------------------------------------
 
