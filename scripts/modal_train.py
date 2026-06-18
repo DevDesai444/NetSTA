@@ -35,7 +35,7 @@ vol = modal.Volume.from_name("netsta-train-data", create_if_missing=True)
 
 @app.function(gpu=GPU, image=image, volumes={"/vol": vol}, timeout=60 * 60 * 5)
 def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual,
-                 seed, split_mode, hidden_channels, backbone_kind):
+                 seed, split_mode, hidden_channels, backbone_kind, max_nodes):
     sys.path.insert(0, "/root")
     import torch
 
@@ -51,7 +51,14 @@ def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual
           torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 
     graphs, sources, meta = load_dataset("/vol/graphs.pt")
-    print("dataset summary:", summarize(graphs, sources))
+    print("dataset summary (raw):", summarize(graphs, sources))
+    # Drop the very largest graphs from training; padded attention costs O(N^2)
+    # memory & time per batch, and a single 7K-node cone dominates the batch.
+    if max_nodes:
+        kept = [(g, s) for g, s in zip(graphs, sources) if g.x.size(0) <= max_nodes]
+        graphs, sources = [g for g, _ in kept], [s for _, s in kept]
+        print(f"after max_nodes<={max_nodes} filter: {len(graphs)} graphs")
+        print("filtered summary:", summarize(graphs, sources))
     ds = InMemoryGraphDataset(graphs)
     # circuit: hold out whole source circuits (cross-topology generalization).
     # random: 70/15/15 over all graphs (in-distribution surrogate quality).
@@ -92,6 +99,7 @@ def main(
     data: str = "data_real/graphs.pt",
     out_subdir: str = "",
     skip_upload: bool = False,
+    max_nodes: int = 1500,
 ):
     if not os.path.exists(data):
         raise SystemExit(f"dataset not found: {data} (run build_real_dataset.py first)")
@@ -104,7 +112,7 @@ def main(
     tasks = ["slack", "arrival_time", "required_time", "critical_path", "congestion", "drc"]
     out = train_remote.remote(
         tasks, epochs, num_layers, batch_size, lr, True, 42, split_mode, hidden,
-        backbone,
+        backbone, max_nodes,
     )
 
     dest_dir = os.path.join("checkpoints_real", out_subdir) if out_subdir else "checkpoints_real"
