@@ -114,6 +114,17 @@ class NetSTAConfig:
     #               (depth 1-14 for 40-gate circuits).
     backbone_kind: str = "timing"
 
+    # When True, inject a projection of the raw node features — both per-node
+    # and a broadcast graph-mean context — into the final node embedding the
+    # heads read. This guarantees the heads keep direct access to the per-node
+    # Liberty features and graph context, so the model is at least as
+    # expressive as a graph-blind MLP on top of whatever the propagation adds
+    # (the MLP baseline beat the GNN on the synthetic set precisely because the
+    # propagated embedding was washing out the per-node signal). Default off so
+    # the original ablation numbers reproduce; the real-netlist model turns it
+    # on.
+    raw_feature_residual: bool = False
+
     def validate(self) -> None:
         if self.node_feature_dim <= 0:
             raise ValueError("node_feature_dim must be set to a positive value")

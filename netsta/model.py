@@ -394,6 +394,19 @@ class TimingPropagationBackbone(nn.Module):
         self.node_emb_dim = 2 * hidden
         self.graph_emb_dim = 2 * self.node_emb_dim
 
+        # Optional raw-feature residual: a projection of the raw node features
+        # (per-node) plus a broadcast graph-mean context, added into the final
+        # node embedding. Keeps the per-node Liberty signal available to every
+        # head regardless of what propagation does to it. Width matches
+        # node_emb_dim so the AT/RT half-slicing in the heads is untouched.
+        self.raw_feature_residual = bool(getattr(config, "raw_feature_residual", False))
+        if self.raw_feature_residual:
+            self.raw_proj = nn.Linear(config.node_feature_dim, self.node_emb_dim)
+            self.raw_ctx_proj = nn.Linear(config.node_feature_dim, self.node_emb_dim)
+            for lin in (self.raw_proj, self.raw_ctx_proj):
+                nn.init.normal_(lin.weight, mean=0.0, std=0.1)
+                nn.init.zeros_(lin.bias)
+
     def set_soft_temperature(self, beta: float) -> None:
         """Anneal the soft-aggregator temperature in both directional layers.
 
@@ -477,6 +490,14 @@ class TimingPropagationBackbone(nn.Module):
         h_rt = self._iterate(h_rt_seed, self.backward_layer, rev_edge_index, edge_attr)
 
         node_emb = torch.cat([h_at, h_rt], dim=-1)
+
+        # Raw-feature residual: re-inject the per-node input features and a
+        # broadcast graph-mean context so the heads never lose direct access to
+        # the Liberty scalars, whatever the propagation did to the embedding.
+        if self.raw_feature_residual:
+            ctx = global_mean_pool(x, batch)                 # [B, F]
+            node_emb = node_emb + self.raw_proj(x) + self.raw_ctx_proj(ctx)[batch]
+
         graph_emb = torch.cat(
             [global_mean_pool(node_emb, batch), global_max_pool(node_emb, batch)], dim=-1,
         )
