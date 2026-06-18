@@ -938,9 +938,16 @@ def _build_head(name: str, config: NetSTAConfig, in_dim: int) -> TaskHead:
 # ---------------------------------------------------------------------------
 
 
+def _make_graphgps_sta(config):
+    """Lazy import to avoid loading torch_geometric.nn.GINEConv eagerly."""
+    from .big_model import GraphGPSWithSTABackbone
+    return GraphGPSWithSTABackbone(config)
+
+
 _BACKBONE_REGISTRY = {
     "gatv2": NetSTABackbone,
     "timing": TimingPropagationBackbone,
+    "graphgps_sta": _make_graphgps_sta,
 }
 
 
