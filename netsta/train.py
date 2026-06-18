@@ -329,6 +329,9 @@ def train(
     load_cached: bool = True,
     augment: bool = True,
     circuit_type: str = "digital",
+    dataset=None,
+    split=None,
+    raw_feature_residual: bool = False,
 ):
     torch.manual_seed(seed)
     dev = _select_device(device)
@@ -338,39 +341,51 @@ def train(
         tasks = ALL_TASKS
     tasks = tuple(tasks)
 
-    print(f"Preparing dataset ({num_circuits} circuits, type={circuit_type}, "
-          f"load_cached={load_cached})...")
-    if circuit_type == "digital":
-        dataset = NetSTADataset(
-            root=data_dir, num_circuits=num_circuits, seed=seed,
-            force_regenerate=not load_cached,
-        )
-    elif circuit_type == "analog":
-        dataset = AnalogCircuitDataset(
-            root=data_dir or "data_analog",
-            num_circuits=num_circuits, seed=seed,
-            force_regenerate=not load_cached,
-        )
-    elif circuit_type == "mixed":
-        dataset = MixedCircuitDataset(
-            root=data_dir or "data_mixed",
-            num_circuits=num_circuits, seed=seed,
-            force_regenerate=not load_cached,
-        )
+    # A caller can hand in a pre-built dataset (e.g. the real-netlist dataset)
+    # to bypass the synthetic generators entirely.
+    if dataset is None:
+        print(f"Preparing dataset ({num_circuits} circuits, type={circuit_type}, "
+              f"load_cached={load_cached})...")
+        if circuit_type == "digital":
+            dataset = NetSTADataset(
+                root=data_dir, num_circuits=num_circuits, seed=seed,
+                force_regenerate=not load_cached,
+            )
+        elif circuit_type == "analog":
+            dataset = AnalogCircuitDataset(
+                root=data_dir or "data_analog",
+                num_circuits=num_circuits, seed=seed,
+                force_regenerate=not load_cached,
+            )
+        elif circuit_type == "mixed":
+            dataset = MixedCircuitDataset(
+                root=data_dir or "data_mixed",
+                num_circuits=num_circuits, seed=seed,
+                force_regenerate=not load_cached,
+            )
+        else:
+            raise ValueError(
+                f"Unknown circuit_type '{circuit_type}'. "
+                "Use one of: digital, analog, mixed."
+            )
     else:
-        raise ValueError(
-            f"Unknown circuit_type '{circuit_type}'. "
-            "Use one of: digital, analog, mixed."
-        )
+        print(f"Using caller-supplied dataset ({len(dataset)} graphs).")
 
-    # Split indices reproducibly
-    n = len(dataset)
-    n_train = int(0.7 * n)
-    n_val = int(0.15 * n)
-    indices = torch.randperm(n, generator=torch.Generator().manual_seed(seed)).tolist()
-    train_idx = indices[:n_train]
-    val_idx = indices[n_train : n_train + n_val]
-    test_idx = indices[n_train + n_val :]
+    # Split indices. A caller can pass an explicit (train, val, test) tuple —
+    # the real-netlist path uses this to split by *source circuit* so test
+    # topologies are unseen. Otherwise fall back to a reproducible random split.
+    if split is not None:
+        train_idx, val_idx, test_idx = split
+    else:
+        n = len(dataset)
+        n_train = int(0.7 * n)
+        n_val = int(0.15 * n)
+        indices = torch.randperm(
+            n, generator=torch.Generator().manual_seed(seed)
+        ).tolist()
+        train_idx = indices[:n_train]
+        val_idx = indices[n_train : n_train + n_val]
+        test_idx = indices[n_train + n_val :]
 
     augmenter = NetSTAAugment() if augment else None
     train_ds = TransformSubset(dataset, train_idx, transform=augmenter)
@@ -448,6 +463,7 @@ def train(
         required_time_std=stats.required_time_std,
         clock_period_mean=stats.clock_period_mean,
         clock_period_std=stats.clock_period_std,
+        raw_feature_residual=raw_feature_residual,
     )
     model = NetSTAModel(config).to(dev)
 
