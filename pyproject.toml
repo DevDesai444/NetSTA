@@ -44,6 +44,20 @@ rag = [
   "ollama>=0.1",
   "umap-learn>=0.5",
 ]
+# Hybrid retrieval: FAISS text search + Neo4j property graph (+ NetworkX
+# in-memory fallback when no Neo4j server is configured).
+retrieval = [
+  "faiss-cpu>=1.7",
+  "neo4j>=5.0",
+  "networkx>=3.0",
+  "sentence-transformers>=2.2",
+]
+# Multi-agent diagnosis layer. The deterministic orchestrator runs without
+# these; install them (plus an LLM key) to drive the real AutoGen GroupChat.
+agents = [
+  "autogen-agentchat>=0.4",
+  "autogen-ext[openai]>=0.4",
+]
 # Interactive demo + benchmarking visualisation.
 demo = [
   "streamlit>=1.30",

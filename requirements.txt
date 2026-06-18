@@ -5,3 +5,5 @@ matplotlib>=3.7.0
 streamlit>=1.30.0
 plotly>=5.18.0
 networkx>=3.0
+faiss-cpu>=1.7
+neo4j>=5.0
