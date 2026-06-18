@@ -22,7 +22,11 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("torch", index_url="https://download.pytorch.org/whl/cu121")
     .pip_install("torch_geometric>=2.5", "numpy", "scipy", "scikit-learn")
-    .add_local_dir("netsta", "/root/netsta", copy=True)
+    # Ignore bytecode so recompilation mid-build doesn't trip the copy hash check.
+    .add_local_dir(
+        "netsta", "/root/netsta", copy=True,
+        ignore=["**/__pycache__", "**/*.pyc", "**/*.pyo"],
+    )
 )
 
 app = modal.App("netsta-train")
@@ -30,7 +34,8 @@ vol = modal.Volume.from_name("netsta-train-data", create_if_missing=True)
 
 
 @app.function(gpu=GPU, image=image, volumes={"/vol": vol}, timeout=60 * 60 * 5)
-def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual, seed):
+def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual,
+                 seed, split_mode, hidden_channels):
     sys.path.insert(0, "/root")
     import torch
 
@@ -48,13 +53,18 @@ def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual
     graphs, sources, meta = load_dataset("/vol/graphs.pt")
     print("dataset summary:", summarize(graphs, sources))
     ds = InMemoryGraphDataset(graphs)
-    split = circuit_level_split(sources, seed=seed)
-    print("split sizes (train/val/test graphs):", [len(s) for s in split])
+    # circuit: hold out whole source circuits (cross-topology generalization).
+    # random: 70/15/15 over all graphs (in-distribution surrogate quality).
+    split = circuit_level_split(sources, seed=seed) if split_mode == "circuit" else None
+    print(f"split_mode={split_mode} hidden={hidden_channels} layers={num_layers}")
+    if split is not None:
+        print("split sizes (train/val/test graphs):", [len(s) for s in split])
 
     ckpt_dir = "/vol/ckpt"
     train(
         dataset=ds, split=split, checkpoint_dir=ckpt_dir,
         epochs=epochs, batch_size=batch_size, lr=lr, num_layers=num_layers,
+        hidden_channels=hidden_channels,
         tasks=tuple(tasks), raw_feature_residual=raw_feature_residual,
         seed=seed, augment=True, device="auto",
     )
@@ -71,25 +81,33 @@ def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual
 
 @app.local_entrypoint()
 def main(
-    epochs: int = 250,
-    num_layers: int = 8,
+    epochs: int = 300,
+    num_layers: int = 10,
     batch_size: int = 32,
     lr: float = 1e-3,
+    hidden: int = 96,
+    split_mode: str = "random",          # random (in-distribution) | circuit (generalization)
     data: str = "data_real/graphs.pt",
+    out_subdir: str = "",                # subfolder under checkpoints_real/ to keep runs apart
+    skip_upload: bool = False,
 ):
     if not os.path.exists(data):
         raise SystemExit(f"dataset not found: {data} (run build_real_dataset.py first)")
 
-    print(f"Uploading {data} -> volume netsta-train-data:/graphs.pt")
-    with vol.batch_upload(force=True) as b:
-        b.put_file(data, "graphs.pt")
+    if not skip_upload:
+        print(f"Uploading {data} -> volume netsta-train-data:/graphs.pt")
+        with vol.batch_upload(force=True) as b:
+            b.put_file(data, "graphs.pt")
 
     tasks = ["slack", "arrival_time", "required_time", "critical_path", "congestion", "drc"]
-    out = train_remote.remote(tasks, epochs, num_layers, batch_size, lr, True, 42)
+    out = train_remote.remote(
+        tasks, epochs, num_layers, batch_size, lr, True, 42, split_mode, hidden
+    )
 
-    os.makedirs("checkpoints_real", exist_ok=True)
+    dest_dir = os.path.join("checkpoints_real", out_subdir) if out_subdir else "checkpoints_real"
+    os.makedirs(dest_dir, exist_ok=True)
     for fn, blob in out.items():
-        dest = os.path.join("checkpoints_real", fn)
+        dest = os.path.join(dest_dir, fn)
         with open(dest, "wb") as f:
             f.write(blob)
         print(f"wrote {dest} ({len(blob)} bytes)")
