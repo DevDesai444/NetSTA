@@ -9,6 +9,9 @@ data/
 data_analog/
 data_mixed/
 data_smoke*/
+# Real-netlist graph dataset — rebuilt from benchmarks/ via build_real_dataset.py
+data_real/
+checkpoints_real/
 
 # Trained model artifacts — retrain from source. To share a checkpoint,
 # explicitly `git add -f checkpoints/<name>.pt`.
@@ -37,3 +40,6 @@ coverage.xml
 
 # Source archives — extract into the repo, don't commit them
 *.zip
+
+# Third-party benchmark netlists (fetched by scripts/fetch_benchmarks.sh)
+benchmarks/
