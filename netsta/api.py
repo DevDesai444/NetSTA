@@ -52,10 +52,13 @@ class DiagnoseRequest(BaseModel):
 
 @app.get("/api/health")
 def health():
+    vllm_url = os.getenv("NETSTA_VLLM_URL")
     return {
         "status": "ok",
         "checkpoint_present": bool(DEFAULT_CKPT and os.path.exists(DEFAULT_CKPT)),
         "checkpoint_path": DEFAULT_CKPT,
+        "lora_endpoint": vllm_url,
+        "lora_active": bool(vllm_url),
     }
 
 

@@ -48,6 +48,11 @@ header .src {
   color: var(--muted);
   font-size: 12px;
 }
+.lora-on {
+  margin-left: 8px;
+  color: var(--accent);
+  font-weight: 600;
+}
 
 .panel {
   background: var(--panel);

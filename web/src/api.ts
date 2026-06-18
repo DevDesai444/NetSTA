@@ -85,7 +85,14 @@ export async function diagnose(req: DiagnoseRequest): Promise<AnalyzeResult> {
   return res.json();
 }
 
-export async function health(): Promise<{ checkpoint_present: boolean }> {
+export interface Health {
+  checkpoint_present: boolean;
+  checkpoint_path?: string;
+  lora_endpoint?: string | null;
+  lora_active?: boolean;
+}
+
+export async function health(): Promise<Health> {
   const res = await fetch("/api/health");
   return res.json();
 }

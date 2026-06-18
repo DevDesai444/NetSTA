@@ -21,10 +21,14 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ckpt, setCkpt] = useState<boolean | null>(null);
+  const [loraActive, setLoraActive] = useState<boolean>(false);
 
   useEffect(() => {
     health()
-      .then((h) => setCkpt(h.checkpoint_present))
+      .then((h) => {
+        setCkpt(h.checkpoint_present);
+        setLoraActive(!!h.lora_active);
+      })
       .catch(() => setCkpt(null));
   }, []);
 
@@ -53,6 +57,7 @@ export default function App() {
         </span>
         <span className="src">
           {ckpt === null ? "" : ckpt ? "GNN checkpoint loaded" : "STA fallback (no checkpoint)"}
+          {loraActive && <span className="lora-on">· 4 LoRA students live</span>}
         </span>
       </header>
 
