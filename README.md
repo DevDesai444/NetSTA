@@ -81,17 +81,19 @@ annealed toward hard max over training to close the train/eval gap.
 
 ## Results
 
-Real netlists, schema v9. Numbers are honest measurements from the runs in
-`results/MODEL_RESULTS.md`; see that file for the full config.
+Real netlists (schema v9), evaluated on **held-out source circuits** — the
+split is by circuit, so no test topology is seen in training. Model: 77.6K
+params, trained on 30 circuits / 2,665 cone graphs. Full detail in
+[`results/MODEL_RESULTS.md`](results/MODEL_RESULTS.md).
 
-| Task | In-distribution (random split) | Cross-circuit (held-out topologies) |
+| Task | Metric | Value |
 |---|---|---|
-| Slack R² | `RESULT_SLACK_INDIST` | `RESULT_SLACK_XCKT` |
-| Arrival-time R² | `RESULT_AT_INDIST` | `RESULT_AT_XCKT` |
-| Required-time R² | `RESULT_RT_INDIST` | `RESULT_RT_XCKT` |
-| Critical-path AUC | `RESULT_CP_INDIST` | `RESULT_CP_XCKT` |
-| DRC AUC | `RESULT_DRC_INDIST` | `RESULT_DRC_XCKT` |
-| Congestion R² | `RESULT_CONG_INDIST` | `RESULT_CONG_XCKT` |
+| Arrival time | R² | **0.64** |
+| Required time | R² | 0.57 |
+| Slack | R² | 0.40 |
+| Critical path | AUC | 0.74 |
+| DRC hotspot | AUC | 0.81 |
+| Congestion | R² | 0.22 |
 
 ### Held-out named benchmarks
 
@@ -99,14 +101,18 @@ Famous circuits excluded from training entirely:
 
 | Circuit | Slack R² | Arrival R² | Critical AUC | DRC AUC |
 |---|---|---|---|---|
-| ISCAS-85 `c6288` (16×16 multiplier) | `RESULT_C6288_SLACK` | `RESULT_C6288_AT` | `RESULT_C6288_CP` | `RESULT_C6288_DRC` |
-| ITC'99 `b19` | `RESULT_B19_SLACK` | `RESULT_B19_AT` | `RESULT_B19_CP` | `RESULT_B19_DRC` |
+| ITC'99 `b19` (≈259K gates) | 0.38 | 0.49 | 0.42 | 0.79 |
+| ISCAS-85 `c6288` (16×16 multiplier) | −1.12 | −0.04 | 0.53 | 0.72 |
 
-The arrival/required-time heads carry the strongest signal (they predict a
-directly-propagated quantity); slack is harder because it's the difference of
-two predictions. The honest read: the directional backbone learns timing
-structure well on real netlists, and clearly beats a graph-blind MLP where path
-structure dominates — but it is a surrogate, not a replacement for signoff STA.
+The honest read: the arrival/required-time heads carry the strongest signal
+(they predict a directly-propagated quantity), and the directional backbone
+learns timing structure on real netlists where a graph-blind MLP can't see
+paths. Slack trails because it's the difference of two predictions. `b19`
+(close to the ITC'99 training distribution) generalizes reasonably; `c6288` is a
+dense, regular multiplier unlike anything in training and the model **fails to
+generalize to it** (negative R²) — a real out-of-distribution limitation stated
+plainly rather than hidden. This is a fast STA surrogate, not a replacement for
+signoff.
 
 ---
 
