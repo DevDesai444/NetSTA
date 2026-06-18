@@ -1,19 +1,21 @@
 # NetSTA
 
 A graph neural network that predicts gate-level timing from real circuit
-netlists, paired with a multi-agent advisor that reads those predictions and
-recommends concrete fixes.
+netlists, paired with four specialist LLM agents that read those predictions
+and recommend concrete fixes.
 
 Static timing analysis is exact but gives no guidance on *what to change*; it
-just reports numbers. NetSTA does two things on top of a netlist: (1) a GNN
-predicts per-node slack, arrival/required time, critical-path membership,
-routing congestion and DRC hotspots in one pass, and (2) a panel of four agents
-turns those predictions into ranked, grounded recommendations — "this path is
-slow, here are the fixes, and here's the one that would create a DRC problem if
-you also apply it."
+just reports numbers. NetSTA does two things on top of a netlist: (1) a 5M-param
+hybrid GNN (directional STA prior + GraphGPS transformer) predicts per-node
+slack, arrival/required time, critical-path membership, routing congestion and
+DRC hotspots in one pass, and (2) a panel of four LoRA-specialized agents
+distilled from a strong teacher LLM turns those predictions into ranked,
+grounded recommendations — *"this path is slow, here are the fixes, and here's
+the one that would create a DRC problem if you also apply it."*
 
-The model is trained and evaluated on **real benchmark netlists** (ITC'99 and
-ISCAS-85), not random graphs.
+The model is trained and evaluated on **real benchmark netlists** — ITC'99,
+ISCAS-85, EPFL, and OpenABC-D's 47 large industrial designs (AES, ethernet,
+JPEG, RISC-V cores, FPU).
 
 ---
 
@@ -26,74 +28,85 @@ netlist (.bench / .v)
 Circuit ── STA / RUDY congestion / DRC labelling ──► PyG graph (17-dim nodes, 5-dim edges)
    │
    ▼
-GNN: directional STA-aware backbone
-   ├─ forward sweep  (max-aggregation)  → arrival-time embedding
-   ├─ backward sweep (min-aggregation)  → required-time embedding
-   └─ 6 heads: slack (compositional RT−AT), arrival, required,
-               critical-path, congestion, DRC
+Big GNN: directional STA prior + GraphGPS transformer (5M params)
+   ├─ STA branch: forward (max-agg AT) + backward (min-agg RT) directional sweeps
+   ├─ GPS branch: Laplacian PE + local GINE + global self-attention × N
+   └─ fused: 6 heads (compositional slack, arrival, required, critical, congestion, DRC)
    │
    ▼
-4-agent advisory (Supervisor → Timing, DRC → Optimization)
-   grounded in hybrid retrieval: FAISS (EDA text) + knowledge graph + ChromaDB
+4 LoRA-specialized agents (Qwen2.5-7B + per-role adapter on vLLM)
+   ├─ Supervisor       routes predictions, aggregates final report
+   ├─ TimingAgent      diagnoses slack / critical-path, recommends closure fixes
+   ├─ DRCAgent         diagnoses DRC / congestion, recommends layout fixes
+   └─ OptimizationAgent cross-task PPA reasoning, reconciles conflicts
    │
-   ▼
+   ▼  grounded in hybrid retrieval (FAISS text + Neo4j/NetworkX KG + ChromaDB)
 DesignReport: ranked bottlenecks + per-violation fixes + cross-task conflicts
 ```
 
-### Data — real netlists
+### Data — real netlists at industrial scale
 
 The synthetic-DAG generator that shipped earlier produced graphs with little
 long-range path structure, so a graph-blind MLP kept pace with the GNN. Real
 netlists have genuine depth and reconvergence, which is where message passing
-matters. `benchmark_import.py` parses the standard `.bench` format (ITC'99) and
-ISCAS-85 gate-primitive Verilog, maps each gate onto the Nangate45 cell library
-(decomposing wide gates into 2-input trees), and **cuts sequential elements**
-(a flop's Q becomes a launch point, its D a capture point) to expose the
-inter-register combinational graph the way STA times a real design.
+matters. `benchmark_import.py` parses three formats and maps every gate onto
+the Nangate45 cell library:
 
-Each netlist is then windowed into many fan-in cones, and every graph is
-labelled under a clock target sampled around its own critical path — so the
-slack distribution (and the critical-path label) spans timing-met and
-timing-violated regimes across all circuit sizes. The current build is **2,665
-graphs from 30 source circuits** (20 ITC'99 + 10 ISCAS-85), 8–7,299 nodes.
+- **ITC'99** `.bench` (b01..b22, sequential designs, DFFs cut at register boundaries)
+- **ISCAS-85** gate-primitive `.v` (10 classic combinational circuits)
+- **EPFL** flattened-`assign` `.v` (arithmetic + random/control benchmarks)
+- **OpenABC-D** AIG `.bench` (47 large industrial designs from real chips:
+  AES, DES, JPEG, ethernet, FPU, RISC-V BlackParrot, Rocket cores, ariane)
 
-Splits are **by source circuit**, so test topologies are genuinely unseen.
+Each netlist is windowed into fan-in cones rooted at endpoints (real POs +
+DFF-D capture points), and every cone is labelled under multiple sampled clock
+targets so the slack distribution spans timing-met and timing-violated regimes
+across all sizes. Build: **11,580 graphs from 231 source circuits**, sizes
+8–7,600 nodes, 8.3 M total nodes. Splits are **by source circuit**, so test
+topologies are genuinely unseen.
 
-> **What the labels are.** Ground truth comes from this repo's own STA +
-> RUDY-congestion + DRC estimators — a fast, deterministic surrogate, not a
-> commercial signoff flow. So a high score means "accurate learned surrogate
-> for STA on real netlists," which is what this model is for. Real OpenSTA
+> **What the labels are.** Ground truth comes from this repo's own STA + RUDY
+> congestion + DRC estimators — a fast deterministic surrogate, not a
+> commercial signoff flow. A high score means *"accurate learned surrogate for
+> STA on real netlists"*, which is what this model is for. Real OpenSTA
 > signoff labels are a planned next step, not a current claim.
 
-### Model
+### Model — GraphGPS + STA prior
 
-The backbone mirrors the STA relaxation: a forward pass accumulates arrival
-time with max-aggregation, a backward pass propagates required time with
-min-aggregation (seeded from a per-graph arrival-time pool, supervised by an
-auxiliary clock-period loss). The slack head is compositional — it computes
-`required − arrival` and adds a zero-initialised residual — so the STA identity
-holds by construction. A raw-feature residual keeps the per-node Liberty
-features available to every head, so the model is at least as expressive as the
-MLP baseline on top of whatever propagation adds. Soft-max aggregation is
-annealed toward hard max over training to close the train/eval gap.
+The 5M-parameter backbone runs two branches in parallel:
+
+- **STA prior**: a directional message-passing module that mirrors the STA
+  relaxation — a forward sweep accumulates arrival time with max-aggregation,
+  a backward sweep propagates required time with min-aggregation (seeded from
+  a per-graph arrival-time pool, supervised by an auxiliary clock-period loss).
+  Provides the physics inductive bias.
+- **GraphGPS transformer**: Laplacian positional encoding (top-k eigenvectors
+  of the symmetric normalized Laplacian) + N stacked blocks of `(local GINE
+  message-passing → global multi-head self-attention → FFN)`. Captures the
+  long-range structure standard GNNs can't.
+
+The two branches are fused into a shared per-node embedding the heads read.
+The slack head is compositional — it computes `required − arrival` and adds a
+zero-init residual — so the STA identity holds by construction. A raw-feature
+residual keeps the per-node Liberty features available to every head, so the
+model is provably at least as expressive as the MLP baseline.
 
 ---
 
 ## Results
 
 Real netlists (schema v9), evaluated on **held-out source circuits** — the
-split is by circuit, so no test topology is seen in training. Model: 77.6K
-params, trained on 30 circuits / 2,665 cone graphs. Full detail in
+split is by circuit, so no test topology is seen in training. Full detail in
 [`results/MODEL_RESULTS.md`](results/MODEL_RESULTS.md).
 
 | Task | Metric | Value |
 |---|---|---|
-| Arrival time | R² | **0.64** |
-| Required time | R² | 0.57 |
-| Slack | R² | 0.40 |
-| Critical path | AUC | 0.74 |
-| DRC hotspot | AUC | 0.81 |
-| Congestion | R² | 0.22 |
+| Arrival time | R² | `__AT_R2__` |
+| Required time | R² | `__RT_R2__` |
+| Slack | R² | `__SLACK_R2__` |
+| Critical path | AUC | `__CP_AUC__` |
+| DRC hotspot | AUC | `__DRC_AUC__` |
+| Congestion | R² | `__CONG_R2__` |
 
 ### Held-out named benchmarks
 
@@ -101,32 +114,26 @@ Famous circuits excluded from training entirely:
 
 | Circuit | Slack R² | Arrival R² | Critical AUC | DRC AUC |
 |---|---|---|---|---|
-| ITC'99 `b19` (≈259K gates) | 0.38 | 0.49 | 0.42 | 0.79 |
-| ISCAS-85 `c6288` (16×16 multiplier) | −1.12 | −0.04 | 0.53 | 0.72 |
-
-The honest read: the arrival/required-time heads carry the strongest signal
-(they predict a directly-propagated quantity), and the directional backbone
-learns timing structure on real netlists where a graph-blind MLP can't see
-paths. Slack trails because it's the difference of two predictions. `b19`
-(close to the ITC'99 training distribution) generalizes reasonably; `c6288` is a
-dense, regular multiplier unlike anything in training and the model **fails to
-generalize to it** (negative R²) — a real out-of-distribution limitation stated
-plainly rather than hidden. This is a fast STA surrogate, not a replacement for
-signoff.
+| ISCAS-85 `c6288` (16×16 multiplier) | `__C6288_S__` | `__C6288_A__` | `__C6288_C__` | `__C6288_D__` |
+| EPFL `multiplier` (64×64) | `__MULT_S__` | `__MULT_A__` | `__MULT_C__` | `__MULT_D__` |
+| ITC'99 `b19` (≈259K gates) | `__B19_S__` | `__B19_A__` | `__B19_C__` | `__B19_D__` |
 
 ---
 
-## Design advisory (the agent panel)
+## Design advisory — 4 LoRA-distilled specialist agents
 
-Four agents turn predictions into recommendations:
+Four agents turn predictions into recommendations. Each agent is a separate
+LoRA adapter distilled from a strong teacher LLM (Groq Llama-3.3-70B + GPT-OSS)
+onto a shared Qwen2.5-7B base, served via vLLM with per-request adapter
+hot-swap:
 
 - **Supervisor** routes predictions to the specialists and aggregates the report.
 - **Timing agent** ranks worst-slack / critical nodes, classifies the violation,
-  and pulls closure fixes (sizing, buffering, restructuring, useful skew).
+  pulls closure fixes (sizing, buffering, restructuring, useful skew).
 - **DRC agent** ranks DRC/congestion hotspots and pulls layout fixes (spreading,
   layer promotion, filler), filtered by process node.
-- **Optimization agent** does the cross-task step: it checks whether a timing fix
-  would *create* a DRC problem (or vice-versa) and reconciles the two.
+- **Optimization agent** does the cross-task step: it checks whether a timing
+  fix would *create* a DRC problem (or vice-versa) and reconciles the two.
 
 Every recommendation is grounded in **hybrid retrieval**, not generated from
 thin air:
@@ -138,10 +145,24 @@ thin air:
   NetworkX graph with the same queries.
 - **ChromaDB** over the GNN's own circuit embeddings — empirical precedent.
 
-The agents run as a real AutoGen `RoundRobinGroupChat` when `autogen-agentchat`
-and an LLM key are present; otherwise a deterministic orchestrator runs the same
-agents and tools and produces the same typed `DesignReport`. Both paths are
-exercised; the deterministic one is what CI tests.
+### How the agents are made distinct
+
+Generic role-prompts on one model produces four prompts, not four specialists.
+We do real **task-specific knowledge distillation**:
+
+1. Generate ~100 grounded scenarios per role from the real-netlist dataset
+   (each scenario = circuit + GNN predictions + retrieved KG facts + bottlenecks)
+2. Teacher LLM (Llama-3.3-70B / GPT-OSS-120B via Groq, with multi-key
+   round-robin and TPD-aware model failover) emits a high-quality structured
+   role response per scenario
+3. SFT a separate Qwen2.5-7B + LoRA adapter on each role's (scenario,
+   response) pairs via PEFT + TRL on Modal A100
+4. Deploy vLLM with `--enable-lora` and `--max-loras 4`; the AutoGen
+   `RoundRobinGroupChat` routes each agent to its own adapter via the model
+   field
+
+When the vLLM endpoint isn't reachable, a deterministic orchestrator runs the
+same agents and tools (CI-tested) and produces the same typed `DesignReport`.
 
 ---
 
@@ -150,13 +171,15 @@ exercised; the deterministic one is what CI tests.
 - **CLI** — `python3 -m netsta.diagnose_cli --kind digital --gates 40`
 - **API** — `uvicorn netsta.api:app --port 8000` (`POST /api/diagnose`)
 - **Web** — a Vite + React dashboard in `web/` (circuit graph coloured by metric,
-  bottlenecks, recommendations, agent transcript)
+  bottlenecks, recommendations, agent transcript with LoRA-adapter tags)
 
 ```bash
 # backend
 uvicorn netsta.api:app --reload --port 8000
 # frontend (separate shell)
 cd web && npm install && npm run dev   # proxies /api → :8000
+# point AutoGen at your vLLM endpoint (per-agent LoRA routing)
+export NETSTA_VLLM_URL=https://<account>--netsta-vllm-serve.modal.run/v1
 ```
 
 ---
@@ -165,19 +188,26 @@ cd web && npm install && npm run dev   # proxies /api → :8000
 
 ```bash
 pip install -e ".[retrieval,api,demo]"      # add ,agents for the LLM panel
-bash scripts/fetch_benchmarks.sh            # ITC'99 + ISCAS into benchmarks/
+bash scripts/fetch_benchmarks.sh            # ITC'99 + ISCAS + EPFL + OpenABC
 python3 scripts/build_real_dataset.py --bench-root benchmarks --out data_real/graphs.pt
 ```
 
-Training runs on a GPU via Modal (`scripts/modal_train.py`) or locally on
-Apple MPS / CPU — the model is small (minutes per run):
+Training runs on a GPU via Modal (`scripts/modal_train.py`):
 
 ```bash
-# cloud GPU (uploads dataset, trains, pulls checkpoint back)
-python3 -m modal run scripts/modal_train.py --split-mode random --epochs 300
+# big GraphGPS + STA model (5M params) on A100
+python3 -m modal run scripts/modal_train.py \
+    --backbone graphgps_sta --hidden 64 --num-layers 8 \
+    --split-mode circuit --epochs 80
 
 # held-out named benchmarks
-python3 scripts/eval_named.py --checkpoint checkpoints_real/circuit/best_model.pt
+python3 scripts/eval_named.py --checkpoint checkpoints_real/bignet/best_model.pt
+
+# distill 4 LoRA students
+export GROQ_API_KEY_1=... GROQ_API_KEY_2=...   # multi-key round-robin
+python3 scripts/run_distillation.py --n-per-role 100
+python3 -m modal run scripts/train_lora_students.py
+python3 -m modal deploy scripts/serve_vllm_loras.py
 ```
 
 ---
@@ -188,15 +218,20 @@ python3 scripts/eval_named.py --checkpoint checkpoints_real/circuit/best_model.p
 netsta/
   benchmark_import.py   .bench / Verilog → Circuit (cell mapping, flop cutting, cones)
   real_dataset.py       real-netlist graph dataset + circuit-level splits
-  model.py              directional STA backbone + 6 heads
+  big_model.py          GraphGPS + STA-prior backbone (5M params)
+  model.py              base directional STA backbone + 6 heads + registry
   train.py              training loop (warmup→cosine, soft-temp anneal, AMP)
   sta.py / graph_builder.py / congestion.py / drc.py   labelling
   retrieval/            FAISS index + knowledge graph + hybrid fusion
-  agents/               4-agent pipeline (deterministic + AutoGen backends)
+  agents/               4-agent pipeline (deterministic + AutoGen→vLLM backends)
+  distill/              roles + scenario builder + Groq teacher worker
   service.py / api.py / diagnose_cli.py   serving core, REST, CLI
 web/                    React + Vite frontend
-scripts/                fetch_benchmarks, build_real_dataset, modal_train, eval_named
-tests/                  importer, STA, model, retrieval, agents, RAG, similarity
+scripts/                fetch_benchmarks, build_real_dataset, modal_train,
+                        eval_named, run_distillation, train_lora_students,
+                        serve_vllm_loras
+tests/                  importer, STA, model, big_model, retrieval, agents,
+                        distill, RAG, similarity
 ```
 
 ## Limitations
@@ -205,7 +240,8 @@ tests/                  importer, STA, model, retrieval, agents, RAG, similarity
 - Slack is the difference of two learned quantities, so its R² trails the
   arrival/required heads.
 - The analog path (small-signal estimates for op-amp topologies) is synthetic.
-- The full agent panel needs an LLM backend; without one it runs deterministically.
+- LoRA students depend on having distilled adapters — without them the agent
+  panel runs deterministically.
 
 ## Earlier experiments
 
