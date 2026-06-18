@@ -27,7 +27,14 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 
-from .benchmark_import import bench_to_circuit, cone_windows, parse_bench, parse_verilog
+from .benchmark_import import (
+    _looks_like_epfl,
+    bench_to_circuit,
+    cone_windows,
+    parse_bench,
+    parse_epfl_verilog,
+    parse_verilog,
+)
 from .graph_builder import circuit_to_pyg
 from .sta import run_sta
 
@@ -73,7 +80,10 @@ def build_real_graphs(
 
     for fi, path in enumerate(bench_paths):
         try:
-            parser = parse_verilog if path.lower().endswith(".v") else parse_bench
+            if path.lower().endswith(".v"):
+                parser = parse_epfl_verilog if _looks_like_epfl(path) else parse_verilog
+            else:
+                parser = parse_bench
             nl = parser(path)
             whole = bench_to_circuit(nl, seed=seed + fi)
         except Exception as exc:  # keep one bad file from killing the build
