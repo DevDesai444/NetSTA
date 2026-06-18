@@ -303,6 +303,18 @@ button.run:disabled {
   color: var(--accent);
   font-weight: 600;
   min-width: 140px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lora-tag {
+  background: rgba(79, 156, 249, 0.15);
+  color: #9ecbff;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: monospace;
 }
 .said {
   color: var(--text);

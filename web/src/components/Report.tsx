@@ -4,13 +4,25 @@ function pct(x: number) {
   return `${Math.round(x * 100)}%`;
 }
 
+// Map agent names -> the LoRA adapter that answered (visible only when the
+// AutoGen backend is wired to our vLLM specialist students).
+const LORA_FOR_AGENT: Record<string, string> = {
+  SupervisorAgent: "supervisor-lora",
+  TimingAgent: "timing-lora",
+  DRCAgent: "drc-lora",
+  OptimizationAgent: "optimization-lora",
+};
+
 export function Report({ report }: { report: DesignReport }) {
+  const isAutogen = report.backend === "autogen";
   return (
     <div className="report">
       <div className="panel">
         <div className="panel-head">
           <h3>Bottlenecks</h3>
-          <span className={`badge badge-${report.backend}`}>{report.backend}</span>
+          <span className={`badge badge-${report.backend}`}>
+            {isAutogen ? "AutoGen + 4 LoRA students" : report.backend}
+          </span>
         </div>
         {report.bottlenecks.length === 0 && (
           <p className="muted">No violations flagged for this circuit.</p>
@@ -75,7 +87,12 @@ export function Report({ report }: { report: DesignReport }) {
         </div>
         {report.transcript.map((t, i) => (
           <div key={i} className="turn">
-            <span className="who">{t.agent}</span>
+            <span className="who">
+              {t.agent}
+              {isAutogen && LORA_FOR_AGENT[t.agent] && (
+                <span className="lora-tag">{LORA_FOR_AGENT[t.agent]}</span>
+              )}
+            </span>
             <span className="said">{t.summary}</span>
           </div>
         ))}
