@@ -58,6 +58,11 @@ agents = [
   "autogen-agentchat>=0.4",
   "autogen-ext[openai]>=0.4",
 ]
+# REST backend for the web frontend.
+api = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+]
 # Interactive demo + benchmarking visualisation.
 demo = [
   "streamlit>=1.30",
@@ -74,8 +79,9 @@ dev = [
 
 [project.scripts]
 # Console entry points: `pip install -e .` then run `netsta-parse "..."` etc.
-netsta-parse  = "netsta.parse:main"
-netsta-search = "netsta.search:main"
+netsta-parse    = "netsta.parse:main"
+netsta-search   = "netsta.search:main"
+netsta-diagnose = "netsta.diagnose_cli:main"
 
 [project.urls]
 Homepage   = "https://github.com/DevDesai444/NetSTA"
@@ -88,6 +94,7 @@ exclude = ["tests*", "scripts*"]
 
 [tool.setuptools.package-data]
 "netsta.rag" = ["*.json"]
+"netsta.retrieval" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
