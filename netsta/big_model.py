@@ -152,13 +152,18 @@ class GraphGPSBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _global_attn(self, x: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
-        """Per-graph self-attention by chunking on the batch vector."""
+        """Per-graph self-attention by chunking on the batch vector.
+
+        Under torch.amp the attention output is fp16 even when `x` is fp32,
+        so we pre-allocate the output buffer in the attention op's dtype to
+        avoid an `index_put` dtype mismatch.
+        """
         if batch is None:
             x_in = x.unsqueeze(0)  # [1, N, D]
             out, _ = self.attn(x_in, x_in, x_in, need_weights=False)
             return out.squeeze(0)
-        out = torch.zeros_like(x)
         num_graphs = int(batch.max().item()) + 1
+        out: Optional[torch.Tensor] = None
         for g in range(num_graphs):
             node_mask = batch == g
             idx = node_mask.nonzero(as_tuple=True)[0]
@@ -166,8 +171,11 @@ class GraphGPSBlock(nn.Module):
                 continue
             x_g = x[idx].unsqueeze(0)  # [1, n_g, D]
             attended, _ = self.attn(x_g, x_g, x_g, need_weights=False)
-            out[idx] = attended.squeeze(0)
-        return out
+            attended = attended.squeeze(0)
+            if out is None:
+                out = torch.zeros_like(x, dtype=attended.dtype)
+            out[idx] = attended
+        return out if out is not None else x
 
     def forward(
         self,

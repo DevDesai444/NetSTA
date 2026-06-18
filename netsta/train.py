@@ -332,6 +332,7 @@ def train(
     dataset=None,
     split=None,
     raw_feature_residual: bool = False,
+    backbone_kind: str = "timing",
 ):
     torch.manual_seed(seed)
     dev = _select_device(device)
@@ -464,6 +465,7 @@ def train(
         clock_period_mean=stats.clock_period_mean,
         clock_period_std=stats.clock_period_std,
         raw_feature_residual=raw_feature_residual,
+        backbone_kind=backbone_kind,
     )
     model = NetSTAModel(config).to(dev)
 

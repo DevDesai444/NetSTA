@@ -27,8 +27,9 @@ from netsta.predict import load_model
 from netsta.sta import run_sta
 
 NAMED = {
-    "c6288": "benchmarks/iscas/ISCAS85/c6288/c6288.v",   # ISCAS-85 16x16 multiplier
-    "b19": "benchmarks/itc99/i99t/b19/b19.bench",        # ITC'99 large design
+    "c6288":      "benchmarks/iscas/ISCAS85/c6288/c6288.v",      # ISCAS-85 16x16 multiplier
+    "multiplier": "benchmarks/epfl/arithmetic/multiplier.v",     # EPFL 64x64 multiplier
+    "b19":        "benchmarks/itc99/i99t/b19/b19.bench",         # ITC'99 large design
 }
 
 _REG = ("slack", "arrival_time", "required_time")
@@ -40,17 +41,23 @@ _TARGET = {
 
 
 @torch.no_grad()
-def eval_circuit(model, circuit, clock_factor=0.95, max_cones=40):
-    cones = cone_windows(circuit, max_cones=max_cones, min_cone_nodes=8, seed=7)
+def eval_circuit(model, circuit, clock_factor=0.95, max_cones=60, max_cone_nodes=6000):
+    cones = cone_windows(
+        circuit, max_cones=max_cones, min_cone_nodes=8,
+        max_cone_nodes=max_cone_nodes, seed=7,
+    )
     if not cones:
         cones = [circuit]
     pooled = {t: ([], []) for t in _REG + _CLS}
     for cone in cones:
-        base = run_sta(cone)
-        clock = max(base["max_arrival_time_ns"] * clock_factor, 1e-3)
-        res = run_sta(cone, clock_period_ns=clock)
-        data = circuit_to_pyg(cone, res)
-        out = model(data.x, data.edge_index, edge_attr=data.edge_attr)
+        try:
+            base = run_sta(cone)
+            clock = max(base["max_arrival_time_ns"] * clock_factor, 1e-3)
+            res = run_sta(cone, clock_period_ns=clock)
+            data = circuit_to_pyg(cone, res)
+            out = model(data.x, data.edge_index, edge_attr=data.edge_attr)
+        except Exception:
+            continue
         for t in _REG + _CLS:
             key = _TARGET[t]
             if t in out and hasattr(data, key):

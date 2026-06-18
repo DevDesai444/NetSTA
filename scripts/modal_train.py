@@ -16,7 +16,7 @@ import sys
 
 import modal
 
-GPU = os.environ.get("NETSTA_GPU", "A10G")
+GPU = os.environ.get("NETSTA_GPU", "A100-40GB")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -35,7 +35,7 @@ vol = modal.Volume.from_name("netsta-train-data", create_if_missing=True)
 
 @app.function(gpu=GPU, image=image, volumes={"/vol": vol}, timeout=60 * 60 * 5)
 def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual,
-                 seed, split_mode, hidden_channels):
+                 seed, split_mode, hidden_channels, backbone_kind):
     sys.path.insert(0, "/root")
     import torch
 
@@ -56,7 +56,7 @@ def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual
     # circuit: hold out whole source circuits (cross-topology generalization).
     # random: 70/15/15 over all graphs (in-distribution surrogate quality).
     split = circuit_level_split(sources, seed=seed) if split_mode == "circuit" else None
-    print(f"split_mode={split_mode} hidden={hidden_channels} layers={num_layers}")
+    print(f"split_mode={split_mode} hidden={hidden_channels} layers={num_layers} backbone={backbone_kind}")
     if split is not None:
         print("split sizes (train/val/test graphs):", [len(s) for s in split])
 
@@ -67,6 +67,7 @@ def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual
         hidden_channels=hidden_channels,
         tasks=tuple(tasks), raw_feature_residual=raw_feature_residual,
         seed=seed, augment=True, device="auto",
+        backbone_kind=backbone_kind,
     )
     vol.commit()
 
@@ -81,14 +82,15 @@ def train_remote(tasks, epochs, num_layers, batch_size, lr, raw_feature_residual
 
 @app.local_entrypoint()
 def main(
-    epochs: int = 300,
-    num_layers: int = 10,
-    batch_size: int = 32,
-    lr: float = 1e-3,
-    hidden: int = 96,
-    split_mode: str = "random",          # random (in-distribution) | circuit (generalization)
+    epochs: int = 100,
+    num_layers: int = 8,
+    batch_size: int = 16,
+    lr: float = 5e-4,
+    hidden: int = 64,
+    backbone: str = "graphgps_sta",
+    split_mode: str = "circuit",
     data: str = "data_real/graphs.pt",
-    out_subdir: str = "",                # subfolder under checkpoints_real/ to keep runs apart
+    out_subdir: str = "",
     skip_upload: bool = False,
 ):
     if not os.path.exists(data):
@@ -101,7 +103,8 @@ def main(
 
     tasks = ["slack", "arrival_time", "required_time", "critical_path", "congestion", "drc"]
     out = train_remote.remote(
-        tasks, epochs, num_layers, batch_size, lr, True, 42, split_mode, hidden
+        tasks, epochs, num_layers, batch_size, lr, True, 42, split_mode, hidden,
+        backbone,
     )
 
     dest_dir = os.path.join("checkpoints_real", out_subdir) if out_subdir else "checkpoints_real"
