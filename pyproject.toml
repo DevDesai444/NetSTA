@@ -63,13 +63,7 @@ api = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
 ]
-# Interactive demo + benchmarking visualisation.
-demo = [
-  "streamlit>=1.30",
-  "plotly>=5.18",
-  "networkx>=3.0",
-]
-# Optional sklearn for baselines and t-SNE fallback.
+# Optional sklearn for metrics (AUC) and t-SNE fallback.
 ml-extras = ["scikit-learn>=1.0"]
 # Dev + CI tooling.
 dev = [
