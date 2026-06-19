@@ -234,15 +234,6 @@ tests/                  importer, STA, model, big_model, retrieval, agents,
                         distill, RAG, similarity
 ```
 
-## Limitations
-
-- Labels are this repo's STA/RUDY/DRC estimators, not commercial signoff.
-- Slack is the difference of two learned quantities, so its R² trails the
-  arrival/required heads.
-- The analog path (small-signal estimates for op-amp topologies) is synthetic.
-- LoRA students depend on having distilled adapters — without them the agent
-  panel runs deterministically.
-
 ## Earlier experiments
 
 Baseline comparisons (MLP / GCN / GraphSAGE), backbone ablations, and the
