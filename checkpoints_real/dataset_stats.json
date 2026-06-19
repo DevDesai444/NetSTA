@@ -1,0 +1,10 @@
+{
+  "slack_mean": 0.40829503536224365,
+  "slack_std": 1.2198255062103271,
+  "arrival_time_mean": 0.3211044669151306,
+  "arrival_time_std": 0.8280989527702332,
+  "required_time_mean": 0.7293995022773743,
+  "required_time_std": 1.4382139444351196,
+  "clock_period_mean": 0.5725840330123901,
+  "clock_period_std": 1.1911966800689697
+}
