@@ -43,3 +43,6 @@ coverage.xml
 
 # Third-party benchmark netlists (fetched by scripts/fetch_benchmarks.sh)
 benchmarks/
+
+# Live serving endpoint URL (machine-local)
+.vllm_url.txt
