@@ -19,8 +19,11 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
         "vllm==0.6.4",
-        "transformers>=4.45",
-        "huggingface_hub>=0.25",
+        # Pin transformers to a 4.x release — vllm 0.6.4 still calls
+        # `tokenizer.all_special_tokens_extended` which transformers 5.x removed.
+        "transformers>=4.45,<5",
+        # Pin huggingface_hub similarly; vllm 0.6.4 was built before 1.x.
+        "huggingface_hub>=0.25,<1",
     )
 )
 
