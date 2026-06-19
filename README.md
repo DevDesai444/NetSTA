@@ -44,7 +44,7 @@ Big GNN: directional STA prior + GraphGPS transformer (5M params)
 DesignReport: ranked bottlenecks + per-violation fixes + cross-task conflicts
 ```
 
-### Data — real netlists at industrial scale
+### Data
 
 The synthetic-DAG generator that shipped earlier produced graphs with little
 long-range path structure, so a graph-blind MLP kept pace with the GNN. Real
