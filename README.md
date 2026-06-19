@@ -101,12 +101,12 @@ split is by circuit, so no test topology is seen in training. Full detail in
 
 | Task | Metric | Value |
 |---|---|---|
-| Arrival time | R² | `__AT_R2__` |
-| Required time | R² | `__RT_R2__` |
-| Slack | R² | `__SLACK_R2__` |
-| Critical path | AUC | `__CP_AUC__` |
-| DRC hotspot | AUC | `__DRC_AUC__` |
-| Congestion | R² | `__CONG_R2__` |
+| Arrival time | R² | `0.70` |
+| Required time | R² | `0.73` |
+| Slack | R² | `0.66` |
+| Critical path | AUC | `0.80` |
+| DRC hotspot | AUC | `0.89` |
+| Congestion | R² | `0.34` |
 
 ### Held-out named benchmarks
 
@@ -114,9 +114,9 @@ Famous circuits excluded from training entirely:
 
 | Circuit | Slack R² | Arrival R² | Critical AUC | DRC AUC |
 |---|---|---|---|---|
-| ISCAS-85 `c6288` (16×16 multiplier) | `__C6288_S__` | `__C6288_A__` | `__C6288_C__` | `__C6288_D__` |
-| EPFL `multiplier` (64×64) | `__MULT_S__` | `__MULT_A__` | `__MULT_C__` | `__MULT_D__` |
-| ITC'99 `b19` (≈259K gates) | `__B19_S__` | `__B19_A__` | `__B19_C__` | `__B19_D__` |
+| ISCAS-85 `c6288` (16×16 multiplier) | `-0.22` | `0.48` | `0.49` | `0.73` |
+| EPFL `multiplier` (64×64) | `0.13` | `0.30` | `0.57` | `0.61` |
+| ITC'99 `b19` (≈259K gates) | `0.14` | `0.50` | `0.47` | `0.78` |
 
 ---
 
