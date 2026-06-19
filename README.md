@@ -21,27 +21,39 @@ JPEG, RISC-V cores, FPU).
 
 ## How it works
 
-```
-netlist (.bench / .v)
-   │  parse → Nangate45 cells, cut flip-flops at register boundaries
-   ▼
-Circuit ── STA / RUDY congestion / DRC labelling ──► PyG graph (17-dim nodes, 5-dim edges)
-   │
-   ▼
-Big GNN: directional STA prior + GraphGPS transformer (5M params)
-   ├─ STA branch: forward (max-agg AT) + backward (min-agg RT) directional sweeps
-   ├─ GPS branch: Laplacian PE + local GINE + global self-attention × N
-   └─ fused: 6 heads (compositional slack, arrival, required, critical, congestion, DRC)
-   │
-   ▼
-4 LoRA-specialized agents (Qwen2.5-7B + per-role adapter on vLLM)
-   ├─ Supervisor       routes predictions, aggregates final report
-   ├─ TimingAgent      diagnoses slack / critical-path, recommends closure fixes
-   ├─ DRCAgent         diagnoses DRC / congestion, recommends layout fixes
-   └─ OptimizationAgent cross-task PPA reasoning, reconciles conflicts
-   │
-   ▼  grounded in hybrid retrieval (FAISS text + Neo4j/NetworkX KG + ChromaDB)
-DesignReport: ranked bottlenecks + per-violation fixes + cross-task conflicts
+```mermaid
+flowchart TD
+    A[".bench / .v netlist<br/>ITC'99 · ISCAS-85 · EPFL · OpenABC-D"] --> B["benchmark_import.py<br/>parse → Nangate45 cells<br/>cut flip-flops, fan-in cones"]
+    B --> C["Circuit<br/>+ STA / RUDY congestion / DRC labels"]
+    C --> D["PyG graph<br/>17-dim node features · 5-dim edge features"]
+
+    D --> E["GNN backbone — 5M params<br/><b>GraphGPS transformer + STA prior</b>"]
+    E --> F1["slack<br/>(R²=0.66)"]
+    E --> F2["arrival<br/>(R²=0.70)"]
+    E --> F3["required<br/>(R²=0.73)"]
+    E --> F4["critical path<br/>(AUC=0.80)"]
+    E --> F5["congestion<br/>(R²=0.34)"]
+    E --> F6["DRC hotspot<br/>(AUC=0.89)"]
+
+    F1 & F2 & F3 & F4 & F5 & F6 --> G["Supervisor Agent<br/>(supervisor_lora)"]
+    G --> H1["Timing Agent<br/>(timing_lora)"]
+    G --> H2["DRC Agent<br/>(drc_lora)"]
+    H1 & H2 --> H3["Optimization Agent<br/>(optimization_lora)<br/>cross-task PPA reasoning"]
+
+    R[("Hybrid retrieval<br/>FAISS · KG · ChromaDB")] -.grounded facts.-> H1
+    R -.grounded facts.-> H2
+    R -.grounded facts.-> H3
+
+    H3 --> Z["DesignReport<br/>ranked bottlenecks · per-violation fixes · cross-task conflicts"]
+
+    classDef gnn fill:#1f3a5f,stroke:#4f9cf9,color:#fff;
+    classDef agent fill:#2d3a4e,stroke:#7c9cff,color:#fff;
+    classDef store fill:#2a3a2a,stroke:#7cff9c,color:#fff;
+    classDef out fill:#3a2a3a,stroke:#ff9cff,color:#fff;
+    class E gnn;
+    class G,H1,H2,H3 agent;
+    class R store;
+    class Z out;
 ```
 
 ### Data
@@ -90,6 +102,53 @@ The slack head is compositional — it computes `required − arrival` and adds 
 zero-init residual — so the STA identity holds by construction. A raw-feature
 residual keeps the per-node Liberty features available to every head, so the
 model is provably at least as expressive as the MLP baseline.
+
+```mermaid
+flowchart LR
+    X["Node features<br/>x ∈ ℝ^(N×17)<br/>(Liberty + PI/PO flags + analog block)"]
+    E["Edge features<br/>e ∈ ℝ^(E×5)<br/>(wire delay · manhattan · fanout · …)"]
+
+    subgraph STA["STA prior branch — physics-aware"]
+        direction TB
+        AT["Forward sweep<br/>max-aggregation"] --> AT_emb["AT embedding"]
+        AT_emb --> SEED["per-graph AT-pool seed<br/>+ aux clock-period loss"]
+        SEED --> RT["Backward sweep<br/>min-aggregation"]
+        RT --> RT_emb["RT embedding"]
+    end
+
+    subgraph GPS["GraphGPS transformer branch — N stacked blocks"]
+        direction TB
+        PE["random-walk PE<br/>+ feature projection"] --> B1["block 1"]
+        B1 --> B2["block 2"]
+        B2 --> Bdots["…"]
+        Bdots --> BN["block N<br/>(local GINE + global attention + FFN)"]
+    end
+
+    X --> STA
+    X --> GPS
+    E --> STA
+    E --> GPS
+
+    AT_emb --> FUSE["concat(STA, GPS)<br/>+ raw-feature residual<br/>↓ MLP fusion"]
+    RT_emb --> FUSE
+    BN --> FUSE
+
+    FUSE --> H1["Slack head<br/>(compositional: RT-AT + residual)"]
+    FUSE --> H2["Arrival-time head"]
+    FUSE --> H3["Required-time head"]
+    FUSE --> H4["Critical-path head"]
+    FUSE --> H5["Congestion head"]
+    FUSE --> H6["DRC hotspot head"]
+
+    classDef sta fill:#2a3a5f,stroke:#5f9cff,color:#fff;
+    classDef gps fill:#3a2a5f,stroke:#9c5fff,color:#fff;
+    classDef fuse fill:#5f3a2a,stroke:#ff9c5f,color:#fff;
+    classDef head fill:#2a4f3a,stroke:#5fff9c,color:#fff;
+    class AT,AT_emb,SEED,RT,RT_emb sta;
+    class PE,B1,B2,Bdots,BN gps;
+    class FUSE fuse;
+    class H1,H2,H3,H4,H5,H6 head;
+```
 
 ---
 
